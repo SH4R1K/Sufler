@@ -27,6 +27,13 @@ public sealed class TrayIconService : ITrayIcon
     private bool _refreshing;
     private bool _disposed;
 
+    /// <summary>
+    /// The paths the «Скрипты» submenu was built from, or null while it holds no items yet. A
+    /// refresh that reports the same files again leaves the items alone, which is what keeps the
+    /// item whose <see cref="ToolStripMenuItem.Click"/> is being processed alive and usable.
+    /// </summary>
+    private string[]? _renderedScripts;
+
     public TrayIconService()
     {
         _menu = new ContextMenuStrip();
@@ -159,16 +166,30 @@ public sealed class TrayIconService : ITrayIcon
         return item;
     }
 
+    /// <summary>
+    /// Rebuilds the submenu, but only for a file set that is not on screen yet. The composition
+    /// root refreshes the tray from the click handler of this very submenu, and clearing the items
+    /// of a dropdown that is still raising its click disposes the item being clicked; comparing the
+    /// files first means the common refresh leaves the items untouched, so no deferral through the
+    /// message pump is needed and <see cref="Refresh"/> stays synchronous and thread-affine.
+    /// </summary>
     private void RebuildScripts(IReadOnlyList<string>? scripts)
     {
+        var wanted = scripts is null ? Array.Empty<string>() : scripts.ToArray();
+        if (_renderedScripts is not null && _renderedScripts.SequenceEqual(wanted, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _renderedScripts = wanted;
         _scriptsItem.DropDownItems.Clear();
-        if (scripts is null || scripts.Count == 0)
+        if (wanted.Length == 0)
         {
             _scriptsItem.DropDownItems.Add(new ToolStripMenuItem("(нет)") { Enabled = false });
             return;
         }
 
-        foreach (var path in scripts)
+        foreach (var path in wanted)
         {
             var item = new ToolStripMenuItem(Path.GetFileName(path))
             {

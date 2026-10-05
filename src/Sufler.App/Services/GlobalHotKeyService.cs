@@ -171,6 +171,27 @@ public sealed class GlobalHotKeyService : IHotKeyService
             ["Windows"] = HotKeyNative.ModWin,
         };
 
+        /// <summary>
+        /// The digit row, which WPF names D0 to D9 while the codes are VK_0 to VK_9.
+        /// </summary>
+        private static readonly (string Name, uint VirtualKey)[] DigitRowKeys =
+            [.. Enumerable.Range(0, 10).Select(digit => ("D" + digit, (uint)(0x30 + digit)))];
+
+        /// <summary>
+        /// The numeric keypad, which WPF names NumPad0 to NumPad9 while the codes are VK_NUMPAD0 on.
+        /// </summary>
+        private static readonly (string Name, uint VirtualKey)[] NumpadKeys =
+            [.. Enumerable.Range(0, 10).Select(digit => ("NumPad" + digit, (uint)(0x60 + digit)))];
+
+        /// <summary>
+        /// The named keys of a gesture, with the virtual key each one stands for. The editor
+        /// builds its gestures from <c>System.Windows.Input.Key.ToString()</c>, so the names of that
+        /// enum are what has to be understood here: <c>D1</c> is the digit row and <c>NumPad1</c>
+        /// the keypad, and neither of them is a single character. The codes are the ones of the
+        /// documented virtual-key table, and the <c>Oem</c> names are the keys whose character a
+        /// keyboard layout decides, so <c>OemPlus</c> is the code of the main <c>=</c>/<c>+</c>
+        /// key and not the code of <c>Add</c>, which is the <c>+</c> of the keypad.
+        /// </summary>
         private static readonly (string Name, uint VirtualKey)[] NamedKeys =
         [
             ("Space", 0x20),
@@ -180,12 +201,15 @@ public sealed class GlobalHotKeyService : IHotKeyService
             ("Escape", 0x1B),
             ("Esc", 0x1B),
             ("Backspace", 0x08),
+            ("Back", 0x08),
             ("Delete", 0x2E),
             ("Insert", 0x2D),
             ("Home", 0x24),
             ("End", 0x23),
             ("PageUp", 0x21),
+            ("Prior", 0x21),
             ("PageDown", 0x22),
+            ("Next", 0x22),
             ("Left", 0x25),
             ("Up", 0x26),
             ("Right", 0x27),
@@ -194,6 +218,36 @@ public sealed class GlobalHotKeyService : IHotKeyService
             ("Pause", 0x13),
             ("NumLock", 0x90),
             ("ScrollLock", 0x91),
+            ("Scroll", 0x91),
+            ("Separator", 0x6C),
+            ("Multiply", 0x6A),
+            ("Add", 0x6B),
+            ("Subtract", 0x6D),
+            ("Decimal", 0x6E),
+            ("Divide", 0x6F),
+            ("Oem1", 0xBA),
+            ("OemSemicolon", 0xBA),
+            ("OemPlus", 0xBB),
+            ("OemComma", 0xBC),
+            ("OemMinus", 0xBD),
+            ("OemPeriod", 0xBE),
+            ("Oem2", 0xBF),
+            ("OemQuestion", 0xBF),
+            ("Oem3", 0xC0),
+            ("OemTilde", 0xC0),
+            ("Oem4", 0xDB),
+            ("OemOpenBrackets", 0xDB),
+            ("Oem5", 0xDC),
+            ("OemPipe", 0xDC),
+            ("Oem6", 0xDD),
+            ("OemCloseBrackets", 0xDD),
+            ("Oem7", 0xDE),
+            ("OemQuotes", 0xDE),
+            ("Oem8", 0xDF),
+            ("Oem102", 0xE2),
+            ("OemBackslash", 0xE2),
+            .. DigitRowKeys,
+            .. NumpadKeys,
         ];
 
         public static Gesture Parse(string? gesture)

@@ -5,9 +5,9 @@ using Sufler.Core.Script;
 namespace Sufler.App.Services;
 
 /// <summary>
-/// Stores the working script as <c>current.txt</c> and the named scripts as <c>*.txt</c> inside
-/// <c>scripts\</c>, all under the application data directory. Writes go through a temporary file
-/// so a crash in the middle of a save cannot truncate the previous content.
+/// Stores the working script as <c>current.txt</c> and the named scripts as <c>*.txt</c> and
+/// <c>*.md</c> inside <c>scripts\</c>, all under the application data directory. Writes go through
+/// a temporary file so a crash in the middle of a save cannot truncate the previous content.
 /// </summary>
 public sealed class FileScriptStore : IScriptStore
 {
@@ -48,8 +48,17 @@ public sealed class FileScriptStore : IScriptStore
             return Array.Empty<string>();
         }
 
-        return Directory.EnumerateFiles(directory, "*" + TxtExtension)
-            .Where(path => string.Equals(Path.GetExtension(path), TxtExtension, StringComparison.OrdinalIgnoreCase))
+        // The folder is enumerated whole and the extension is compared here: a wildcard pattern
+        // cannot tell a script from the "*.tmp" file a failed atomic write leaves behind, and an
+        // exact comparison against the two accepted extensions rejects that file the same way it
+        // rejects anything else the user did not save as a script.
+        return Directory.EnumerateFiles(directory)
+            .Where(path =>
+            {
+                var extension = Path.GetExtension(path);
+                return string.Equals(extension, TxtExtension, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(extension, MarkdownExtension, StringComparison.OrdinalIgnoreCase);
+            })
             .Select(Path.GetFullPath)
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -73,6 +82,14 @@ public sealed class FileScriptStore : IScriptStore
         return Path.GetFullPath(path);
     }
 
+    /// <summary>
+    /// Writes through a temporary file so the destination is never half written.
+    /// <c>File.Delete</c> is deliberately absent from this class: nothing the user saved is ever
+    /// removed by it. The temporary file this method creates itself is the one exception — it is
+    /// the store's own litter, it sits in the user's folder, and a refused «Сохранить как…» must
+    /// not leave it behind. Only that path is ever deleted: never the destination and never a file
+    /// the user named.
+    /// </summary>
     private static void WriteAtomic(string path, string content)
     {
         var directory = Path.GetDirectoryName(path);
@@ -82,7 +99,31 @@ public sealed class FileScriptStore : IScriptStore
         }
 
         var temp = path + ".tmp";
-        File.WriteAllText(temp, content, Utf8WithoutBom);
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            File.WriteAllText(temp, content, Utf8WithoutBom);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteTemp(temp);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Removes the temporary file of a failed write. It never replaces the failure being reported:
+    /// a temp file the file system refuses to delete is left alone, and the original exception is
+    /// what the caller has to show.
+    /// </summary>
+    private static void TryDeleteTemp(string temp)
+    {
+        try
+        {
+            File.Delete(temp);
+        }
+        catch (Exception)
+        {
+        }
     }
 }
