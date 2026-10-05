@@ -74,7 +74,7 @@
 
             <TextBlock x:Name="EmptyHint"
                        Margin="24"
-                       Text="Вставьте текст (Ctrl+V) или откройте окно &quot;Сценарий&quot; — Ctrl+Alt+T"
+                       Text="Текст пуст — откройте «Сценарий» (Ctrl+Alt+T) и вставьте текст (Ctrl+V)"
                        Foreground="#A6FFFFFF"
                        FontSize="18"
                        TextWrapping="Wrap"
