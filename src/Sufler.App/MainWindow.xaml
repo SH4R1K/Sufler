@@ -46,10 +46,16 @@
                 MouseLeftButtonDown="OnDragStripMouseLeftButtonDown" />
 
         <Grid Grid.Row="1">
+            <!-- The prompter must have no visible scrollbars, hence Hidden rather than Visible.
+                 It must not be Disabled, though: "Disabled" does not merely hide the bars, it turns
+                 scrolling off, the content gets measured against the viewport height instead of its
+                 own, ExtentHeight collapses onto ViewportHeight and ScrollableHeight stays 0 — so
+                 the wheel, the arrows and ScrollToVerticalOffset all move nothing. "Hidden" keeps
+                 the same bare look and still scrolls. -->
             <ScrollViewer x:Name="Scroller"
                           CanContentScroll="False"
-                          VerticalScrollBarVisibility="Disabled"
-                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Hidden"
                           Focusable="False">
                 <TextBlock x:Name="ScriptTextBlock"
                            Margin="24,4,24,12"

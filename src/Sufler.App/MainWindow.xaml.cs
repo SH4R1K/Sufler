@@ -413,7 +413,16 @@ public partial class MainWindow : Window
 
     private void ApplyOffset(double offsetPx)
     {
-        var scrollable = Math.Max(0d, Scroller.ScrollableHeight);
+        // The clamp bound is normally the ScrollViewer's own ScrollableHeight, and the normal path is
+        // that it is positive — the XAML asks for Hidden, not Disabled, precisely because "Disabled"
+        // reports 0 forever (bars off, content measured to the viewport, extent == viewport). So this
+        // is a fallback, not the mechanism: when the viewer says it cannot scroll but the engine has
+        // measured content taller than the viewport, trust the engine's MaxOffsetPx so the offset is
+        // not pinned to 0 before it ever reaches ScrollToVerticalOffset — which clamps to its own
+        // range anyway, so no bogus offset can come out of it.
+        var scrollable = Scroller.ScrollableHeight > 0d
+            ? Scroller.ScrollableHeight
+            : _engine.MaxOffsetPx;
         var target = Math.Clamp(offsetPx, 0d, scrollable);
         Scroller.ScrollToVerticalOffset(target);
 
