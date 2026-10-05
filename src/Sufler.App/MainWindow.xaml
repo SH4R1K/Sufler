@@ -46,16 +46,24 @@
                 MouseLeftButtonDown="OnDragStripMouseLeftButtonDown" />
 
         <Grid Grid.Row="1">
-            <!-- The prompter must have no visible scrollbars, hence Hidden rather than Visible.
-                 It must not be Disabled, though: "Disabled" does not merely hide the bars, it turns
-                 scrolling off, the content gets measured against the viewport height instead of its
-                 own, ExtentHeight collapses onto ViewportHeight and ScrollableHeight stays 0 — so
-                 the wheel, the arrows and ScrollToVerticalOffset all move nothing. "Hidden" keeps
-                 the same bare look and still scrolls. -->
+            <!-- No visible scrollbars in either direction: that is the look of the prompter, so
+                 neither axis may be Visible. The two axes still need different values, because
+                 ScrollViewer only applies its own dimension to the content for Disabled, Auto and
+                 Visible — not for Hidden.
+                 Vertical is Hidden: Hidden does not apply the ScrollViewer dimension, so the
+                 content keeps its own height, extent exceeds the viewport and there is a scroll
+                 range. Disabled would apply ViewportHeight instead, ExtentHeight would collapse
+                 onto it, ScrollableHeight would stay 0, and the wheel, the arrows and
+                 ScrollToVerticalOffset would move nothing.
+                 Horizontal is Disabled: it applies ViewportWidth to the content, which is what lets
+                 TextWrapping="Wrap" actually wrap long lines to the window width. Hidden would
+                 measure the TextBlock at unbounded width, so the lines would run past the right
+                 edge of the window with no way to reach them — and no horizontal bar to scroll
+                 with, since Visible is not allowed. -->
             <ScrollViewer x:Name="Scroller"
                           CanContentScroll="False"
                           VerticalScrollBarVisibility="Hidden"
-                          HorizontalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Disabled"
                           Focusable="False">
                 <TextBlock x:Name="ScriptTextBlock"
                            Margin="24,4,24,12"
