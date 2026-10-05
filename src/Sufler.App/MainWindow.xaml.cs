@@ -24,7 +24,6 @@ public partial class MainWindow : Window
 
     private static readonly TimeSpan ScrollTickInterval = TimeSpan.FromMilliseconds(16);
     private static readonly TimeSpan GeometryChangedDelay = TimeSpan.FromMilliseconds(400);
-    private static readonly TimeSpan DiagnosticInterval = TimeSpan.FromSeconds(1);
 
     private readonly ScrollEngine _engine = new();
     private readonly Stopwatch _clock = new();
@@ -36,24 +35,6 @@ public partial class MainWindow : Window
     private bool _metricsDirty = true;
     private bool _clickThrough;
     private bool _applyingSettings;
-
-    // Scroll diagnostics (temporary, see ScrollDiagnostics). The timers below are the same clock as
-    // the scroll tick, so a record never writes more than a line per second of real time; the rest
-    // are the previous values of each gate, so a record is written the moment the thing it watches
-    // changes even if the second has not turned yet.
-    private TimeSpan _lastDiagnosticAt;
-    private TimeSpan _lastApplyDiagnosticAt;
-    private TimeSpan _lastMetricsDiagnosticAt;
-    private double _tickCount;
-    private double _lastAppliedTarget;
-    private double _lastAppliedClampMax;
-    private double _lastDiagnosticOffset;
-    private bool _lastDiagnosticRunning;
-    private bool _lastDiagnosticPaused;
-    private double _lastRecordedApplyTarget = double.NaN;
-    private double _lastLoggedLineHeight = double.NaN;
-    private double _lastLoggedContentHeight = double.NaN;
-    private double _lastLoggedViewportHeight = double.NaN;
 
     // Live reference to the settings the composition root owns: geometry is written back into
     // it before UserSettingChanged is raised. ApplySettings swaps it, so always write into the
@@ -164,7 +145,6 @@ public partial class MainWindow : Window
     {
         _clickThrough = enabled;
         ApplyNativeStyles();
-        ScrollDiagnostics.Log("click-through", DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax));
     }
 
     public void SetScrollingRunning(bool running)
@@ -178,7 +158,6 @@ public partial class MainWindow : Window
             _engine.Stop();
         }
 
-        ScrollDiagnostics.Log("run-toggle", DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax));
         UpdateStatusStrip();
     }
 
@@ -186,7 +165,6 @@ public partial class MainWindow : Window
     {
         _engine.Reset();
         ApplyOffset(_engine.OffsetPx);
-        ScrollDiagnostics.Log("reset", DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax));
         UpdateStatusStrip();
     }
 
@@ -198,8 +176,6 @@ public partial class MainWindow : Window
         // The timer keeps ticking while the window is hidden on purpose: a paused timer would
         // collect one huge elapsed delta and make the script jump when the window comes back.
         _scrollTimer.Start();
-
-        ScrollDiagnostics.Log("loaded", DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax));
     }
 
     private void OnPrompterClosed(object? sender, EventArgs e)
@@ -220,8 +196,6 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnPrompterIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        ScrollDiagnostics.Log("visible", DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax));
-
         if (IsVisible)
         {
             ApplyNativeStyles();
@@ -373,15 +347,6 @@ public partial class MainWindow : Window
         var viewportHeight = Scroller.ActualHeight;
         if (lineHeight <= 0d || contentHeight <= 0d || viewportHeight <= 0d)
         {
-            // LayoutUpdated raises this on every layout pass, and a refusal leaves the metrics dirty
-            // on purpose, so the reason the engine is not being fed is exactly the thing worth
-            // having in the log: which of the three measured values was not there yet.
-            LogMetricsDiagnostic(
-                "metrics-skip",
-                lineHeight,
-                contentHeight,
-                viewportHeight,
-                lineHeight <= 0d ? "lineHeight" : contentHeight <= 0d ? "contentHeight" : "viewportHeight");
             return;
         }
 
@@ -389,8 +354,6 @@ public partial class MainWindow : Window
         _engine.LineHeightPx = lineHeight;
         _engine.ContentHeightPx = contentHeight;
         _engine.ViewportHeightPx = viewportHeight;
-
-        LogMetricsDiagnostic("metrics", lineHeight, contentHeight, viewportHeight, "none");
     }
 
     private void OnScrollTick(object? sender, EventArgs e)
@@ -398,7 +361,6 @@ public partial class MainWindow : Window
         var now = _clock.Elapsed;
         var elapsed = now - _lastTick;
         _lastTick = now;
-        _tickCount += 1d;
 
         if (_engine.IsRunning)
         {
@@ -407,7 +369,6 @@ public partial class MainWindow : Window
             ApplyOffset(step.OffsetPx);
         }
 
-        LogTickDiagnostic(elapsed);
         UpdateStatusStrip();
     }
 
@@ -425,20 +386,6 @@ public partial class MainWindow : Window
             : _engine.MaxOffsetPx;
         var target = Math.Clamp(offsetPx, 0d, scrollable);
         Scroller.ScrollToVerticalOffset(target);
-
-        _lastAppliedTarget = target;
-        _lastAppliedClampMax = scrollable;
-
-        // Recording the target is what separates "the engine moves the offset and the ScrollViewer
-        // ignores it" from "the engine does not move it at all": both look identical in the
-        // status strip, only this line tells them apart.
-        var moved = double.IsNaN(target) || Math.Abs(target - _lastRecordedApplyTarget) > 1d;
-        if (moved || _clock.Elapsed - _lastApplyDiagnosticAt >= DiagnosticInterval)
-        {
-            _lastApplyDiagnosticAt = _clock.Elapsed;
-            _lastRecordedApplyTarget = target;
-            ScrollDiagnostics.Log("apply", DiagnosticSnapshot(target, scrollable));
-        }
     }
 
     private void OnPrompterMouseWheel(object sender, MouseWheelEventArgs e)
@@ -449,23 +396,11 @@ public partial class MainWindow : Window
         _engine.ScrollLines(-Math.Sign(e.Delta));
         e.Handled = true;
         ApplyOffset(_engine.OffsetPx);
-        ScrollDiagnostics.Log(
-            "wheel",
-            DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax, inputDelta: e.Delta));
         UpdateStatusStrip();
     }
 
     private void OnPrompterKeyDown(object sender, KeyEventArgs e)
     {
-        // Logged before anything else: a prompter that never records a key is not receiving input at
-        // all, and that is a different fault from one that receives it and does not scroll.
-        ScrollDiagnostics.Log(
-            $"key:{e.Key}",
-            DiagnosticSnapshot(
-                _lastAppliedTarget,
-                _lastAppliedClampMax,
-                modifiers: (int)Keyboard.Modifiers));
-
         // Modified combinations belong to the application and to the global hotkeys; leaving
         // them unhandled is what keeps Ctrl+V and Ctrl+Alt+T working.
         if (Keyboard.Modifiers != ModifierKeys.None)
@@ -555,105 +490,4 @@ public partial class MainWindow : Window
 
         return _engine.IsAtEnd ? "В конце" : "Стоп";
     }
-
-    // ---------------------------------------------------------------------------
-    // Temporary scroll diagnostics. Read only, no behaviour: every method below either returns
-    // without touching the scroll path or appends a line to the diagnostics file. Delete the block
-    // and the ScrollDiagnostics.Log calls once the "does not scroll" report is closed.
-    // ---------------------------------------------------------------------------
-
-    /// <summary>
-    /// Records a tick. Once a second while nothing changes, and immediately whenever the run state
-    /// or the offset moves: the offset is compared with the same one pixel tolerance the apply record
-    /// uses, because a live scroll moves it on every single tick.
-    /// </summary>
-    private void LogTickDiagnostic(TimeSpan elapsed)
-    {
-        var running = _engine.IsRunning;
-        var paused = _engine.IsPaused;
-        var offset = _engine.OffsetPx;
-
-        var changed = running != _lastDiagnosticRunning
-            || paused != _lastDiagnosticPaused
-            || double.IsNaN(_lastDiagnosticOffset)
-            || Math.Abs(offset - _lastDiagnosticOffset) > 1d;
-        if (!changed && _clock.Elapsed - _lastDiagnosticAt < DiagnosticInterval)
-        {
-            return;
-        }
-
-        _lastDiagnosticAt = _clock.Elapsed;
-        _lastDiagnosticRunning = running;
-        _lastDiagnosticPaused = paused;
-        _lastDiagnosticOffset = offset;
-
-        ScrollDiagnostics.Log(
-            "tick",
-            DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax, deltaMs: elapsed.TotalMilliseconds));
-    }
-
-    /// <summary>
-    /// Records a metrics push, either the one the engine accepted or the one a half-finished layout
-    /// made impossible. Both happen on every layout pass, so the measured triple is logged whenever
-    /// it changes and otherwise at most once a second.
-    /// </summary>
-    private void LogMetricsDiagnostic(
-        string reason,
-        double lineHeight,
-        double contentHeight,
-        double viewportHeight,
-        string skipCause)
-    {
-        var changed = lineHeight != _lastLoggedLineHeight
-            || contentHeight != _lastLoggedContentHeight
-            || viewportHeight != _lastLoggedViewportHeight;
-        if (!changed && _clock.Elapsed - _lastMetricsDiagnosticAt < DiagnosticInterval)
-        {
-            return;
-        }
-
-        _lastMetricsDiagnosticAt = _clock.Elapsed;
-        _lastLoggedLineHeight = lineHeight;
-        _lastLoggedContentHeight = contentHeight;
-        _lastLoggedViewportHeight = viewportHeight;
-
-        ScrollDiagnostics.Log(
-            reason,
-            DiagnosticSnapshot(_lastAppliedTarget, _lastAppliedClampMax, skipCause: skipCause));
-    }
-
-    private ScrollDiagnosticsSnapshot DiagnosticSnapshot(
-        double target,
-        double clampMax,
-        double deltaMs = 0d,
-        double inputDelta = 0d,
-        double modifiers = 0d,
-        string skipCause = "-") =>
-        new()
-        {
-            Ticks = _tickCount,
-            Running = _engine.IsRunning,
-            Paused = _engine.IsPaused,
-            Offset = _engine.OffsetPx,
-            Max = _engine.MaxOffsetPx,
-            LineHeight = _engine.LineHeightPx,
-            Content = _engine.ContentHeightPx,
-            ViewportEngine = _engine.ViewportHeightPx,
-            Scrollable = Scroller.ScrollableHeight,
-            ViewportReal = Scroller.ViewportHeight,
-            Extent = Scroller.ExtentHeight,
-            VerticalOffset = Scroller.VerticalOffset,
-            Target = target,
-            ClampMax = clampMax,
-            TextLength = ScriptTextBlock.Text.Length,
-            HintVisible = EmptyHint.Visibility == Visibility.Visible,
-            DeltaMs = deltaMs,
-            ClickThrough = _clickThrough,
-            RawLineHeight = _lineHeightPx,
-            TextActualHeight = ScriptTextBlock.ActualHeight,
-            ScrollerActualHeight = Scroller.ActualHeight,
-            InputDelta = inputDelta,
-            Modifiers = modifiers,
-            SkipCause = skipCause,
-        };
 }
