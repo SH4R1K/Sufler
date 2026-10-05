@@ -159,6 +159,41 @@
                     </StackPanel>
 
                     <Separator Margin="0,8,0,0" />
+                    <TextBlock Text="Размер окна суфлёра" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0"
+                                   Text="Ширина, точек"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,4" />
+                        <TextBox x:Name="WindowWidthBox"
+                                 Grid.Row="0" Grid.Column="1"
+                                 Margin="0,0,0,4"
+                                 TextChanged="OnWindowWidthChanged"
+                                 LostFocus="OnWindowSizeCommitted" />
+                        <TextBlock Grid.Row="1" Grid.Column="0"
+                                   Text="Высота, точек"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0" />
+                        <TextBox x:Name="WindowHeightBox"
+                                 Grid.Row="1" Grid.Column="1"
+                                 TextChanged="OnWindowHeightChanged"
+                                 LostFocus="OnWindowSizeCommitted" />
+                    </Grid>
+                    <TextBlock Text="Ширина 320–3840, высота 240–2160 точек; введённое значение округляется до кратного 10. Пусто — размер по умолчанию."
+                               TextWrapping="Wrap"
+                               Foreground="#FF6A6A6A"
+                               FontSize="12"
+                               Margin="0,4,0,0" />
+
+                    <Separator Margin="0,8,0,0" />
                     <TextBlock Text="Горячие клавиши" FontWeight="SemiBold" Margin="0,8,0,4" />
                     <StackPanel x:Name="HotKeyRowsPanel" Margin="0,0,0,12" />
                 </StackPanel>

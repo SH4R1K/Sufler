@@ -2,9 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace Sufler.App.Interop;
 
-/// <summary>
-/// The global-hotkey surface of user32 plus the module handle of the calling process.
-/// </summary>
+/// <summary>The global-hotkey surface of user32.</summary>
 internal static class HotKeyNative
 {
     internal const uint ModAlt = 0x1;
@@ -20,10 +18,4 @@ internal static class HotKeyNative
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool UnregisterHotKey(IntPtr hwnd, int id);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    internal static extern IntPtr GetModuleHandle(string? moduleName);
-
-    // GetModuleHandle has no caller yet: turning it into an ownership check for the window
-    // handle needs GetWindowThreadProcessId, which belongs to another wave.
 }

@@ -24,6 +24,12 @@ public partial class EditorWindow : Window
 {
     private const string WindowTitle = "Sufler — сценарий";
 
+    private const double MinWindowWidth = 320d;
+    private const double MaxWindowWidth = 3840d;
+    private const double MinWindowHeight = 240d;
+    private const double MaxWindowHeight = 2160d;
+    private const double WindowSizeStep = 10d;
+
     private readonly IScriptStore _scriptStore;
     private readonly IHotKeyService _hotKeys;
     private readonly Dictionary<AppCommand, HotKeyRow> _hotKeyRows = new();
@@ -153,9 +159,7 @@ public partial class EditorWindow : Window
         foreach (var row in _hotKeyRows)
         {
             row.Value.SetGesture(_hotKeys.GestureFor(row.Key));
-            row.Value.SetStatus(_hotKeys.Unavailable.Contains(row.Key)
-                ? "занята другой программой"
-                : "не зарегистрирована");
+            row.Value.SetStatus(HotKeyStatus(row.Key));
         }
 
         if (_hotKeyMessage is { } message && _hotKeyRows.TryGetValue(message.Command, out var failedRow))
@@ -171,6 +175,20 @@ public partial class EditorWindow : Window
     }
 
     public void SetCaptureStatus(string text) => CaptureStatusText.Text = text ?? string.Empty;
+
+    /// <summary>
+    /// Three honest states: the system refused the gesture, the system took it, or the
+    /// gesture was never offered at all.
+    /// </summary>
+    private string HotKeyStatus(AppCommand command)
+    {
+        if (_hotKeys.Unavailable.Contains(command))
+        {
+            return "занята другой программой";
+        }
+
+        return _hotKeys.Registered.Contains(command) ? "зарегистрирована" : "не зарегистрирована";
+    }
 
     private void OnScriptTextChanged(object sender, TextChangedEventArgs e)
     {
@@ -240,6 +258,96 @@ public partial class EditorWindow : Window
         SettingsEdited?.Invoke(this, EventArgs.Empty);
     }
 
+    private void OnWindowWidthChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents)
+        {
+            return;
+        }
+
+        if (TryReadWindowDimension(WindowWidthBox.Text, MinWindowWidth, MaxWindowWidth, out var width))
+        {
+            StoreWindowDimension(width, isWidth: true);
+        }
+    }
+
+    private void OnWindowHeightChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents)
+        {
+            return;
+        }
+
+        if (TryReadWindowDimension(WindowHeightBox.Text, MinWindowHeight, MaxWindowHeight, out var height))
+        {
+            StoreWindowDimension(height, isWidth: false);
+        }
+    }
+
+    /// <summary>
+    /// Rewrites a size box to the stored value when the typed text is out of range, empty or
+    /// unreadable. Empty is how the editor says "let the prompter keep its default size", so it
+    /// must never become a null dimension the prompter could not act on.
+    /// </summary>
+    private void OnWindowSizeCommitted(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox box)
+        {
+            return;
+        }
+
+        var isWidth = ReferenceEquals(box, WindowWidthBox);
+        var stored = isWidth ? _settings.WindowWidth : _settings.WindowHeight;
+        _suppressEvents = true;
+        try
+        {
+            box.Text = FormatWindowDimension(stored);
+        }
+        finally
+        {
+            _suppressEvents = false;
+        }
+    }
+
+    private void StoreWindowDimension(double value, bool isWidth)
+    {
+        var stepped = Math.Round(value / WindowSizeStep) * WindowSizeStep;
+        var stored = isWidth ? _settings.WindowWidth : _settings.WindowHeight;
+        if (stored == stepped)
+        {
+            return;
+        }
+
+        if (isWidth)
+        {
+            _settings.WindowWidth = stepped;
+        }
+        else
+        {
+            _settings.WindowHeight = stepped;
+        }
+
+        SettingsEdited?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Shows the real geometry the prompter reported, down to a tenth of a point, so the box
+    /// never claims a round number the window is not at.
+    /// </summary>
+    private static string FormatWindowDimension(double? value)
+        => value is { } dimension
+            ? dimension.ToString("0.#", CultureInfo.CurrentUICulture)
+            : string.Empty;
+
+    private static bool TryReadWindowDimension(string? text, double min, double max, out double value)
+    {
+        value = 0d;
+        return double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentUICulture, out value)
+            && double.IsFinite(value)
+            && value >= min
+            && value <= max;
+    }
+
     private void LoadFontFamilies()
     {
         _fontFamilies = Fonts.SystemFontFamilies
@@ -264,6 +372,12 @@ public partial class EditorWindow : Window
         SpeedSlider.Value = _settings.LinesPerMinute;
         OpacitySlider.Value = _settings.Opacity;
         LoopCheckBox.IsChecked = _settings.Loop;
+
+        // A null dimension means "no stored geometry": the prompter owns its default, so the
+        // box stays empty instead of showing a number that was never asked for.
+        WindowWidthBox.Text = FormatWindowDimension(_settings.WindowWidth);
+        WindowHeightBox.Text = FormatWindowDimension(_settings.WindowHeight);
+
         UpdateReadouts();
     }
 
@@ -420,9 +534,16 @@ public partial class EditorWindow : Window
         }
 
         _capturingCommand = null;
-        if (!_hotKeys.TryRebind(command, gesture))
+        try
         {
-            _hotKeyMessage = (command, "не удалось зарегистрировать — сочетание занято другой программой");
+            if (!_hotKeys.TryRebind(command, gesture))
+            {
+                _hotKeyMessage = (command, "не удалось зарегистрировать — сочетание занято другой программой");
+            }
+        }
+        catch (ArgumentException error)
+        {
+            _hotKeyMessage = (command, error.Message);
         }
 
         RefreshHotKeyState();
