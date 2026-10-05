@@ -32,6 +32,7 @@ public sealed class TrayIconService : ITrayIcon
         _menu = new ContextMenuStrip();
 
         AddAction("Сценарий…", () => EditorRequested?.Invoke(this, EventArgs.Empty));
+        AddAction("Показать суфлёр", () => PrompterRequested?.Invoke(this, EventArgs.Empty));
         _menu.Items.Add(new ToolStripSeparator());
         _captureItem = AddToggle("Невидимый режим", AppCommand.ToggleCaptureExclusion);
         _clickThroughItem = AddToggle("Кликсквозь", AppCommand.ToggleClickThrough);
@@ -72,6 +73,13 @@ public sealed class TrayIconService : ITrayIcon
     }
 
     public event EventHandler? EditorRequested;
+
+    /// <summary>
+    /// Raised when the user asks for the prompt window to be put back on screen. It lives on the
+    /// concrete class and not on <see cref="ITrayIcon"/> because the shell contract must not grow:
+    /// only this application owns a prompt window that can be hidden.
+    /// </summary>
+    public event EventHandler? PrompterRequested;
 
     public event EventHandler<AppCommand>? CommandRequested;
 

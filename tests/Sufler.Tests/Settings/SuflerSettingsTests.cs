@@ -205,6 +205,8 @@ public sealed class SuflerSettingsTests
         Assert.Equal(original.WindowTop, clone.WindowTop);
         Assert.Equal(original.WindowWidth, clone.WindowWidth);
         Assert.Equal(original.WindowHeight, clone.WindowHeight);
+        Assert.Null(original.HotKeys);
+        Assert.Null(clone.HotKeys);
 
         clone.FontSize = 12d;
         clone.Loop = false;
@@ -213,5 +215,114 @@ public sealed class SuflerSettingsTests
         Assert.Equal(44d, original.FontSize);
         Assert.True(original.Loop);
         Assert.Equal(1024d, original.WindowWidth);
+    }
+
+    [Fact]
+    public void Normalize_KeepsNullHotKeysAsRequestForTheDefaults()
+    {
+        var settings = new SuflerSettings();
+
+        settings.Normalize();
+
+        Assert.Null(settings.HotKeys);
+    }
+
+    [Fact]
+    public void Normalize_KeepsEmptyHotKeysAsIs()
+    {
+        var settings = new SuflerSettings { HotKeys = new Dictionary<string, string>() };
+
+        settings.Normalize();
+
+        Assert.NotNull(settings.HotKeys);
+        Assert.Empty(settings.HotKeys!);
+    }
+
+    [Fact]
+    public void Normalize_DropsBlankHotKeyKeysAndValues()
+    {
+        var settings = new SuflerSettings
+        {
+            HotKeys = new Dictionary<string, string>
+            {
+                ["ToggleEditor"] = string.Empty,
+                ["ToggleScrolling"] = "   ",
+                ["ResetScroll"] = "\t",
+                [string.Empty] = "Ctrl+Alt+A",
+                ["   "] = "Ctrl+Alt+B",
+            },
+        };
+
+        settings.Normalize();
+
+        Assert.NotNull(settings.HotKeys);
+        Assert.Empty(settings.HotKeys!);
+    }
+
+    [Fact]
+    public void Normalize_DropsHotKeysOfUnknownCommands()
+    {
+        var settings = new SuflerSettings
+        {
+            HotKeys = new Dictionary<string, string>
+            {
+                ["ToggleCaptureExclusion"] = "Ctrl+Alt+H",
+                ["NotACommand"] = "Ctrl+Alt+K",
+                // Names are matched exactly, because that is how the application looks a gesture up.
+                ["resetscroll"] = "Ctrl+Alt+R",
+                ["0"] = "Ctrl+Alt+D",
+            },
+        };
+
+        settings.Normalize();
+
+        Assert.NotNull(settings.HotKeys);
+        Assert.Equal(
+            new Dictionary<string, string> { ["ToggleCaptureExclusion"] = "Ctrl+Alt+H" },
+            settings.HotKeys);
+    }
+
+    [Fact]
+    public void Normalize_KeepsKnownHotKeysAndIsIdempotent()
+    {
+        var settings = new SuflerSettings
+        {
+            HotKeys = new Dictionary<string, string>
+            {
+                ["ResetScroll"] = "Ctrl+Alt+Alt+R",
+                ["HideOrQuit"] = "Ctrl+Alt+Q",
+                ["Unknown"] = "Ctrl+Alt+Z",
+            },
+        };
+
+        settings.Normalize();
+        settings.Normalize();
+
+        Assert.NotNull(settings.HotKeys);
+        Assert.Equal(
+            new Dictionary<string, string>
+            {
+                ["ResetScroll"] = "Ctrl+Alt+Alt+R",
+                ["HideOrQuit"] = "Ctrl+Alt+Q",
+            },
+            settings.HotKeys);
+    }
+
+    [Fact]
+    public void Clone_CopiesHotKeysIntoIndependentDictionary()
+    {
+        var original = new SuflerSettings
+        {
+            HotKeys = new Dictionary<string, string> { ["ToggleEditor"] = "Ctrl+Alt+Shift+T" },
+        };
+
+        var clone = original.Clone();
+        clone.HotKeys!["ResetScroll"] = "Ctrl+Alt+Alt+R";
+
+        Assert.NotSame(original.HotKeys, clone.HotKeys);
+        Assert.Equal(
+            new Dictionary<string, string> { ["ToggleEditor"] = "Ctrl+Alt+Shift+T" },
+            original.HotKeys);
+        Assert.Equal(2, clone.HotKeys!.Count);
     }
 }

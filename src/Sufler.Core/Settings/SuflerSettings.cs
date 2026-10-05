@@ -1,3 +1,5 @@
+using Sufler.Core.HotKeys;
+
 namespace Sufler.Core.Settings;
 
 /// <summary>
@@ -15,6 +17,10 @@ public sealed class SuflerSettings
 
     private const double DefaultFontSize = 36d;
     private const double DefaultOpacity = 0.6d;
+    private const int MaxHotKeyEntries = 6;
+
+    private static readonly HashSet<string> CommandNames =
+        new(AppCommands.All.Select(command => command.ToString()), StringComparer.Ordinal);
 
     public string FontFamily { get; set; } = "Segoe UI";
     public double FontSize { get; set; } = 36d;
@@ -27,6 +33,12 @@ public sealed class SuflerSettings
     public double? WindowTop { get; set; }
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
+
+    /// <summary>
+    /// Persisted hot-key gestures: command name -> gesture, e.g. "ResetScroll" -> "Ctrl+Alt+Alt+R".
+    /// Null means "use the defaults from AppCommands".
+    /// </summary>
+    public Dictionary<string, string>? HotKeys { get; set; }
 
     /// <summary>
     /// Brings every value into its supported range. Safe to call repeatedly: the
@@ -47,6 +59,7 @@ public sealed class SuflerSettings
         WindowTop = SanitizePosition(WindowTop);
         WindowWidth = SanitizeSize(WindowWidth);
         WindowHeight = SanitizeSize(WindowHeight);
+        HotKeys = NormalizeHotKeys(HotKeys);
     }
 
     public SuflerSettings Clone() => new()
@@ -62,6 +75,7 @@ public sealed class SuflerSettings
         WindowTop = WindowTop,
         WindowWidth = WindowWidth,
         WindowHeight = WindowHeight,
+        HotKeys = HotKeys is null ? null : new Dictionary<string, string>(HotKeys, StringComparer.Ordinal),
     };
 
     private static double ClampFinite(double value, double fallback, double min, double max)
@@ -72,4 +86,39 @@ public sealed class SuflerSettings
 
     private static double? SanitizeSize(double? value)
         => value is { } candidate && double.IsFinite(candidate) && candidate > 0d ? candidate : null;
+
+    /// <summary>
+    /// Keeps only entries the application can act on: a known command name and a non-blank
+    /// gesture, at most one per command. Null stays null, meaning "use the defaults". The
+    /// surviving order is the order of the incoming dictionary, so a second call finds nothing
+    /// left to change.
+    /// </summary>
+    private static Dictionary<string, string>? NormalizeHotKeys(Dictionary<string, string>? hotKeys)
+    {
+        if (hotKeys is null)
+        {
+            return null;
+        }
+
+        var normalized = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (command, gesture) in hotKeys)
+        {
+            if (normalized.Count >= MaxHotKeyEntries)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(gesture))
+            {
+                continue;
+            }
+
+            if (CommandNames.Contains(command))
+            {
+                normalized[command] = gesture;
+            }
+        }
+
+        return normalized;
+    }
 }
