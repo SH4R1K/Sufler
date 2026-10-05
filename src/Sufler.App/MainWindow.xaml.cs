@@ -64,6 +64,7 @@ public partial class MainWindow : Window
         LocationChanged += OnWindowGeometryChanged;
         SizeChanged += OnWindowGeometryChanged;
         LayoutUpdated += OnPrompterLayoutUpdated;
+        IsVisibleChanged += OnPrompterIsVisibleChanged;
         PreviewMouseWheel += OnPrompterMouseWheel;
         PreviewKeyDown += OnPrompterKeyDown;
 
@@ -71,6 +72,12 @@ public partial class MainWindow : Window
         ApplyScriptFont();
         ApplyEngineSettings();
         ApplyWindowGeometry(_settings);
+
+        // Click-through is persisted, so it has to be seeded from the settings here as well:
+        // the composition root creates the prompter once and never calls SetClickThrough
+        // afterwards, which would leave the field, the native style and the tray out of sync
+        // after a restart with the mode enabled.
+        SetClickThrough(_settings.ClickThrough);
         SetScriptText(scriptText);
     }
 
@@ -101,6 +108,7 @@ public partial class MainWindow : Window
             ApplyScriptFont();
             ApplyEngineSettings();
             ApplyWindowGeometry(_settings);
+            SetClickThrough(_settings.ClickThrough);
         }
         finally
         {
@@ -180,6 +188,20 @@ public partial class MainWindow : Window
 
     private void OnSourceInitialized(object? sender, EventArgs e) => ApplyNativeStyles();
 
+    /// <summary>
+    /// WPF drops the tool-window and click-through bits on its own while the window is hidden
+    /// and rewrites them on the next Show, so the styles have to be re-applied on the way back:
+    /// otherwise a prompter shown again can pop up in Alt+Tab or start swallowing clicks while
+    /// the tray still reports click-through as enabled.
+    /// </summary>
+    private void OnPrompterIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (IsVisible)
+        {
+            ApplyNativeStyles();
+        }
+    }
+
     private void OnContentRendered(object? sender, EventArgs e)
     {
         ApplyNativeStyles();
@@ -212,7 +234,9 @@ public partial class MainWindow : Window
         Width = width;
         Height = height;
 
-        if (settings.WindowLeft is { } left && settings.WindowTop is { } top)
+        if (settings.WindowLeft is { } left &&
+            settings.WindowTop is { } top &&
+            IsOnVirtualScreen(left, top, width, height))
         {
             Left = left;
             Top = top;
@@ -222,6 +246,38 @@ public partial class MainWindow : Window
         var workArea = SystemParameters.WorkArea;
         Left = workArea.Left + ((workArea.Width - width) / 2d);
         Top = workArea.Top + ((workArea.Height - height) / 2d);
+    }
+
+    /// <summary>
+    /// A stored position can point at a monitor that no longer exists, which would restore the
+    /// prompter outside the visible desktop with no way back short of editing settings.json.
+    /// Only a rectangle overlapping the current virtual screen by a usable amount is accepted.
+    /// </summary>
+    private static bool IsOnVirtualScreen(double left, double top, double width, double height)
+    {
+        var screen = new Rect(
+            SystemParameters.VirtualScreenLeft,
+            SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth,
+            SystemParameters.VirtualScreenHeight);
+
+        if (screen.IsEmpty || screen.Width <= 0d || screen.Height <= 0d)
+        {
+            return false;
+        }
+
+        var candidate = new Rect(left, top, width, height);
+        if (!candidate.IntersectsWith(screen))
+        {
+            return false;
+        }
+
+        // A single pixel left on screen is not enough to grab the window back by hand, so a
+        // tenth of it has to stay inside the desktop.
+        var required = Math.Min(screen.Width, screen.Height) / 10d;
+        var visibleWidth = Math.Min(screen.Right, candidate.Right) - Math.Max(screen.Left, candidate.Left);
+        var visibleHeight = Math.Min(screen.Bottom, candidate.Bottom) - Math.Max(screen.Top, candidate.Top);
+        return visibleWidth >= required || visibleHeight >= required;
     }
 
     private void OnWindowGeometryChanged(object? sender, EventArgs e)
@@ -324,7 +380,7 @@ public partial class MainWindow : Window
 
     private void OnPrompterMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        _engine.ScrollLines(Math.Sign(e.Delta));
+        _engine.ScrollLines(-Math.Sign(e.Delta));
         e.Handled = true;
         ApplyOffset(_engine.OffsetPx);
         UpdateStatusStrip();
@@ -342,16 +398,16 @@ public partial class MainWindow : Window
         switch (e.Key)
         {
             case Key.Up:
-                _engine.ScrollLines(1d);
-                break;
-            case Key.Down:
                 _engine.ScrollLines(-1d);
                 break;
+            case Key.Down:
+                _engine.ScrollLines(1d);
+                break;
             case Key.PageUp:
-                _engine.PageBy(1);
+                _engine.PageBy(-1);
                 break;
             case Key.PageDown:
-                _engine.PageBy(-1);
+                _engine.PageBy(1);
                 break;
             case Key.Home:
                 ResetScroll();
