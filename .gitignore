@@ -1,0 +1,28 @@
+## .NET build output
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+*.binlog
+*.user
+*.suo
+
+## Test results
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+coverage*.xml
+coverage*.json
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.sln.docstates
+*.userprefs
+
+## NuGet
+*.nupkg
+*.snupkg
