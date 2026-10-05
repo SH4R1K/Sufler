@@ -1,0 +1,96 @@
+# Builds Sufler and publishes a GitHub Release for every push to main.
+#
+# The release tag is vYYYY.MM.DD-N: the date is taken from the runner clock
+# (windows-latest runners run on UTC) and N is the workflow run number, so two
+# pushes on the same day can never produce the same tag.
+#
+# The release asset is a self-contained win-x64 zip named Sufler-<version>-win-x64.zip.
+# It bundles the .NET runtime, so users do not need .NET installed to run the app.
+#
+# The job runs on windows-latest because Sufler.App targets net10.0-windows and uses
+# WPF and Windows Forms, which do not build on a Linux runner.
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+# Required to create the release; the default GITHUB_TOKEN is used, no extra secrets.
+permissions:
+  contents: write
+
+# Runs are never cancelled on purpose: a second push to main must not kill a run that is
+# already creating a release. Cancelling would let both runs race for the same tag and the
+# losing run could leave main without a release at all. Queued runs simply wait.
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, test and publish release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore NuGet packages
+        run: dotnet restore Sufler.sln
+
+      - name: Build solution (Release)
+        run: dotnet build Sufler.sln -c Release --no-restore
+
+      - name: Run unit tests (Release)
+        run: dotnet test tests\Sufler.Tests\Sufler.Tests.csproj -c Release --no-restore
+
+      # Everything derived is computed here and exported once, so later steps never
+      # repeat a path literal. $env:RUNNER_TEMP is always set on a windows runner.
+      - name: Compute release tag, version and artifact paths
+        shell: pwsh
+        run: |
+          $tag = 'v' + (Get-Date -Format 'yyyy.MM.dd') + '-' + '${{ github.run_number }}'
+          $version = $tag.Substring(1).Replace('-', '.')
+          $publishDir = Join-Path $env:RUNNER_TEMP 'publish'
+          $archivePath = Join-Path $env:RUNNER_TEMP "Sufler-$version-win-x64.zip"
+
+          # Start from a clean publish directory so a re-run never inherits stale files.
+          Remove-Item -Recurse -Force $publishDir -ErrorAction SilentlyContinue
+
+          # utf8 is explicit so the runner never writes a UTF-16 GITHUB_ENV.
+          @(
+            "TAG=$tag"
+            "VERSION=$version"
+            "PUBLISH_DIR=$publishDir"
+            "ARCHIVE_PATH=$archivePath"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "TAG=$tag"
+          "VERSION=$version"
+          "PUBLISH_DIR=$publishDir"
+          "ARCHIVE_PATH=$archivePath"
+
+      - name: Publish self-contained win-x64 build
+        run: dotnet publish src\Sufler.App\Sufler.App.csproj -c Release -r win-x64 --self-contained true -o "${{ env.PUBLISH_DIR }}" -p:Version=${{ env.VERSION }}
+
+      - name: Create release archive
+        shell: pwsh
+        run: Compress-Archive -Path "${{ env.PUBLISH_DIR }}\*" -DestinationPath "${{ env.ARCHIVE_PATH }}" -CompressionLevel Optimal
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Sufler ${{ env.VERSION }}
+          files: ${{ env.ARCHIVE_PATH }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          generate_release_notes: true
