@@ -380,7 +380,10 @@ public partial class MainWindow : Window
 
     private void OnPrompterMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        _engine.ScrollLines(-Math.Sign(e.Delta));
+        // Sign convention: a positive line count moves further into the script, because
+        // ScrollEngine grows OffsetPx by lines * LineHeightPx and that offset goes straight into
+        // ScrollToVerticalOffset. A wheel notch down therefore scrolls like Key.Down, not Key.Up.
+        _engine.ScrollLines(Math.Sign(e.Delta));
         e.Handled = true;
         ApplyOffset(_engine.OffsetPx);
         UpdateStatusStrip();

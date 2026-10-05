@@ -445,7 +445,7 @@ public partial class App : Application
     private void OnEditorClosed(object? sender, EventArgs e)
     {
         TryFlushSettings();
-        _scriptSave?.Flush();
+        TryFlushScriptSave();
 
         if (CurrentEditor(sender) is not { } editor)
         {
@@ -571,6 +571,24 @@ public partial class App : Application
         {
             // The application is going away, so a balloon would never be seen: the log is left.
             LogError(exception);
+        }
+    }
+
+    /// <summary>
+    /// Runs the pending script write right away. Reached from the editor close, where the flush
+    /// still has to read the text back through <see cref="_editor"/>, and guarded like
+    /// <see cref="TryFlushSettings"/>: it runs inside a window-closed handler, where a refusal from
+    /// the file system would otherwise surface as an unhandled error on the dispatcher.
+    /// </summary>
+    private void TryFlushScriptSave()
+    {
+        try
+        {
+            _scriptSave?.Flush();
+        }
+        catch (Exception exception)
+        {
+            ReportFailure("Сценарий", "сохранить сценарий", exception, _scriptStore?.CurrentTextPath);
         }
     }
 

@@ -66,8 +66,36 @@ public sealed class JsonSettingsStore : ISettingsStore
         Directory.CreateDirectory(_directory);
         var path = SettingsPath;
         var temp = path + ".tmp";
-        File.WriteAllText(temp, json);
-        File.Move(temp, path, overwrite: true);
+
+        // Written through the temporary file so a refused write cannot truncate the previous
+        // settings. The file this method creates itself is the only thing it ever deletes: on a
+        // failed write or a failed move the litter goes away with it, and never the destination.
+        try
+        {
+            File.WriteAllText(temp, json);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteTemp(temp);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Removes the temporary file of a failed write. It never replaces the failure being reported:
+    /// a temp file the file system refuses to delete is left alone, and the original exception is
+    /// what the caller has to show.
+    /// </summary>
+    private static void TryDeleteTemp(string temp)
+    {
+        try
+        {
+            File.Delete(temp);
+        }
+        catch (Exception)
+        {
+        }
     }
 
     private static SuflerSettings Defaults() => Normalized(new SuflerSettings());
