@@ -37,6 +37,15 @@ public partial class EditorWindow : Window
 
     private SuflerSettings _settings;
     private bool _suppressEvents;
+
+    // WPF raises the control events that EditorWindow.xaml wires while the BAML tree is still
+    // being built, which happens inside InitializeComponent(). At that moment not one x:Name
+    // field has been assigned yet, and the settings have not been pushed into the controls
+    // either, so such an invocation must do nothing at all. Every handler wired from the markup
+    // checks this flag before it touches a named element; it is set once the constructor has
+    // finished. Document order in the XAML is not a contract and cannot be relied upon instead.
+    private bool _isReady;
+
     private AppCommand? _capturingCommand;
     private (AppCommand Command, string Message)? _hotKeyMessage;
 
@@ -71,6 +80,10 @@ public partial class EditorWindow : Window
 
         RefreshScriptList();
         RefreshHotKeyState();
+
+        // Only now may a control event change a setting: every named field exists and the
+        // controls already show the stored state.
+        _isReady = true;
     }
 
     /// <summary>The user typed or pasted in the script box.</summary>
@@ -192,7 +205,7 @@ public partial class EditorWindow : Window
 
     private void OnScriptTextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_suppressEvents)
+        if (!_isReady || _suppressEvents)
         {
             return;
         }
@@ -202,7 +215,7 @@ public partial class EditorWindow : Window
 
     private void OnFontFamilyChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_suppressEvents || FontFamilyBox.SelectedItem is not FontFamily family)
+        if (!_isReady || _suppressEvents || FontFamilyBox.SelectedItem is not FontFamily family)
         {
             return;
         }
@@ -213,6 +226,11 @@ public partial class EditorWindow : Window
 
     private void OnFontSizeChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        if (!_isReady)
+        {
+            return;
+        }
+
         UpdateReadouts();
         if (_suppressEvents)
         {
@@ -225,6 +243,11 @@ public partial class EditorWindow : Window
 
     private void OnSpeedChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        if (!_isReady)
+        {
+            return;
+        }
+
         UpdateReadouts();
         if (_suppressEvents)
         {
@@ -237,6 +260,11 @@ public partial class EditorWindow : Window
 
     private void OnOpacityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        if (!_isReady)
+        {
+            return;
+        }
+
         UpdateReadouts();
         if (_suppressEvents)
         {
@@ -249,7 +277,7 @@ public partial class EditorWindow : Window
 
     private void OnLoopChanged(object sender, RoutedEventArgs e)
     {
-        if (_suppressEvents)
+        if (!_isReady || _suppressEvents)
         {
             return;
         }
@@ -260,7 +288,7 @@ public partial class EditorWindow : Window
 
     private void OnWindowWidthChanged(object sender, TextChangedEventArgs e)
     {
-        if (_suppressEvents)
+        if (!_isReady || _suppressEvents)
         {
             return;
         }
@@ -273,7 +301,7 @@ public partial class EditorWindow : Window
 
     private void OnWindowHeightChanged(object sender, TextChangedEventArgs e)
     {
-        if (_suppressEvents)
+        if (!_isReady || _suppressEvents)
         {
             return;
         }
@@ -291,7 +319,7 @@ public partial class EditorWindow : Window
     /// </summary>
     private void OnWindowSizeCommitted(object sender, RoutedEventArgs e)
     {
-        if (sender is not TextBox box)
+        if (!_isReady || sender is not TextBox box)
         {
             return;
         }
@@ -390,6 +418,11 @@ public partial class EditorWindow : Window
 
     private void OnLoadScriptClick(object sender, RoutedEventArgs e)
     {
+        if (!_isReady)
+        {
+            return;
+        }
+
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Открыть сценарий",
@@ -420,6 +453,11 @@ public partial class EditorWindow : Window
 
     private void OnSaveScriptAsClick(object sender, RoutedEventArgs e)
     {
+        if (!_isReady)
+        {
+            return;
+        }
+
         var current = SelectedScriptPath();
         var dialog = new Microsoft.Win32.SaveFileDialog
         {

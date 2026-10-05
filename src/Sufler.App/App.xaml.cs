@@ -415,10 +415,43 @@ public partial class App : Application
 
     private void OnPrompterUserSettingChanged(object? sender, EventArgs e) => SaveSettings();
 
-    private void OnEditorScriptTextEdited(object? sender, EventArgs e) => _scriptSave?.Request(PushScriptFromEditor);
+    private void OnEditorScriptTextEdited(object? sender, EventArgs e)
+    {
+        if (CurrentEditor(sender) is null)
+        {
+            return;
+        }
 
-    /// <summary>Keystrokes are coalesced for a second: typing must not write to the disk per character.</summary>
-    private void OnEditorClosed(object? sender, EventArgs e) => _scriptSave?.Flush();
+        _scriptSave?.Request(PushScriptFromEditor);
+    }
+
+    /// <summary>
+    /// A closed editor is flushed and then forgotten. The flush has to come first: the pending
+    /// save reads the text back through <see cref="_editor"/>, which is released below. After
+    /// that the window is unsubscribed and the reference dropped, because a closed window cannot
+    /// be shown again and a late event from it must not reach the prompter or the disk.
+    /// </summary>
+    private void OnEditorClosed(object? sender, EventArgs e)
+    {
+        _scriptSave?.Flush();
+
+        if (CurrentEditor(sender) is not { } editor)
+        {
+            return;
+        }
+
+        editor.ScriptTextEdited -= OnEditorScriptTextEdited;
+        editor.SettingsEdited -= OnEditorSettingsEdited;
+        editor.Closed -= OnEditorClosed;
+        _editor = null;
+    }
+
+    /// <summary>
+    /// Only the editor this class currently owns may report what happened in it. A window that
+    /// has been closed is no longer that one, which is what keeps its late events inert.
+    /// </summary>
+    private EditorWindow? CurrentEditor(object? sender)
+        => sender is EditorWindow editor && ReferenceEquals(editor, _editor) ? editor : null;
 
     private void PushScriptFromEditor()
     {
@@ -434,12 +467,12 @@ public partial class App : Application
 
     private void OnEditorSettingsEdited(object? sender, EventArgs e)
     {
-        if (_editor is null)
+        if (CurrentEditor(sender) is not { } editor)
         {
             return;
         }
 
-        var edited = AdoptLiveValues(_editor.Settings);
+        var edited = AdoptLiveValues(editor.Settings);
         _settings = edited;
         _prompter?.ApplySettings(edited);
         SaveSettings();
