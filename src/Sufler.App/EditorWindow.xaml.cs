@@ -141,8 +141,22 @@ public partial class EditorWindow : Window
 
     public void RefreshScriptList()
     {
+        // Enumerating the scripts folder is a disk operation the file system can refuse, and this
+        // method is reached from the constructor, from a click and from the composition root, so
+        // the refusal must not escape any of them. An empty list is still a usable editor.
+        IReadOnlyList<string> paths;
+        try
+        {
+            paths = _scriptStore.ListSavedScripts();
+        }
+        catch (Exception exception)
+        {
+            ReportStoreFailure("прочитать список сценариев", exception, _scriptStore.ScriptsDirectory);
+            paths = Array.Empty<string>();
+        }
+
         var entries = new List<ScriptListEntry>();
-        foreach (var path in _scriptStore.ListSavedScripts())
+        foreach (var path in paths)
         {
             if (!string.IsNullOrWhiteSpace(path))
             {
@@ -441,7 +455,22 @@ public partial class EditorWindow : Window
             return;
         }
 
-        SetScriptText(_scriptStore.OpenFile(path));
+        // The file was picked by the user and the disk can still refuse it: a OneDrive placeholder
+        // that is not online, a file another program holds open, a full volume. Letting that reach
+        // the dispatcher would end the application, so it is reported and the editor keeps the
+        // script it already had.
+        string text;
+        try
+        {
+            text = _scriptStore.OpenFile(path);
+        }
+        catch (Exception exception)
+        {
+            ReportStoreFailure("открыть сценарий", exception, path);
+            return;
+        }
+
+        SetScriptText(text);
 
         // SetScriptText is silent on purpose, but a file the user just opened did become the
         // working script, so the composition root has to hear about it.
@@ -481,7 +510,19 @@ public partial class EditorWindow : Window
             return;
         }
 
-        _scriptStore.SaveFile(path, ScriptText);
+        // The destination came out of the dialog, so it can still be refused: a read-only folder,
+        // a full volume, a path another program is holding. Reporting it is what keeps a failed
+        // «Сохранить как…» from taking the application down with it.
+        try
+        {
+            _scriptStore.SaveFile(path, ScriptText);
+        }
+        catch (Exception exception)
+        {
+            ReportStoreFailure("сохранить сценарий", exception, path);
+            return;
+        }
+
         UpdateTitle(path);
         RefreshScriptList();
         SelectScript(path);
@@ -508,6 +549,24 @@ public partial class EditorWindow : Window
     {
         var directory = _scriptStore.ScriptsDirectory;
         return !string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory) ? directory : string.Empty;
+    }
+
+    /// <summary>
+    /// Tells the user a store operation failed instead of letting it escape: the dispatcher
+    /// handler rethrows, so an <see cref="IOException"/> from a file the user just picked would
+    /// end the whole application. The original text of the exception and the path are kept,
+    /// because «не удалось» on its own says nothing about what to do next. The composition root
+    /// writes the same failures to the log and shows a balloon; a window of its own is what the
+    /// click that caused it gets.
+    /// </summary>
+    private void ReportStoreFailure(string action, Exception exception, string? path)
+    {
+        var where = string.IsNullOrWhiteSpace(path) ? string.Empty : $"{Environment.NewLine}{path}";
+        MessageBox.Show(
+            $"Не удалось {action}: {exception.Message}{where}",
+            WindowTitle,
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private void UpdateTitle(string? path)
