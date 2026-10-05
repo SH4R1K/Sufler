@@ -24,6 +24,7 @@ public partial class App : Application
     private const string ToolTipText = "Суфлёр";
 
     private static readonly TimeSpan ScriptSaveDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan SettingsSaveDelay = TimeSpan.FromMilliseconds(400);
 
     private JsonSettingsStore? _settingsStore;
     private FileScriptStore? _scriptStore;
@@ -31,6 +32,7 @@ public partial class App : Application
     private TrayIconService? _tray;
     private GlobalHotKeyService? _hotKeys;
     private Debouncer? _scriptSave;
+    private Debouncer? _settingsSave;
 
     private MainWindow? _prompter;
     private EditorWindow? _editor;
@@ -54,14 +56,15 @@ public partial class App : Application
         _capture = new CaptureGuard();
         _tray = new TrayIconService();
         _scriptSave = new Debouncer(ScriptSaveDelay);
+        _settingsSave = new Debouncer(SettingsSaveDelay);
 
         // One live settings instance for the whole run: the prompter writes the window geometry
         // into the object it was given, so replacing it silently would drop those writes.
-        var settings = _settingsStore.Load();
+        var settings = LoadSettingsOrDefaults();
         settings.Normalize();
         _settings = settings;
 
-        _scriptText = ScriptText.Normalize(_scriptStore.LoadCurrentText());
+        _scriptText = LoadCurrentScriptOrEmpty();
 
         _tray.StateProvider = BuildTrayState;
         _tray.EditorRequested += OnEditorRequested;
@@ -87,19 +90,13 @@ public partial class App : Application
         // The last chance to persist. Nothing below may throw: an exception on the way out would
         // replace the real reason for closing with a confusing one.
         _exiting = true;
-        try
-        {
-            SaveSettings();
-        }
-        catch (Exception exception)
-        {
-            LogError(exception);
-        }
+        TryFlushSettings();
 
         DisposeQuietly(_hotKeys);
         DisposeQuietly(_tray);
         DisposeQuietly(_capture);
         DisposeQuietly(_scriptSave);
+        DisposeQuietly(_settingsSave);
 
         base.OnExit(e);
     }
@@ -270,7 +267,7 @@ public partial class App : Application
         _settings.CaptureExcluded = !_settings.CaptureExcluded;
         ApplyCaptureExclusion();
         RefreshTray();
-        SaveSettings();
+        RequestSettingsSave();
     }
 
     private void ToggleClickThrough()
@@ -283,7 +280,7 @@ public partial class App : Application
         _settings.ClickThrough = !_settings.ClickThrough;
         _prompter?.SetClickThrough(_settings.ClickThrough);
         RefreshTray();
-        SaveSettings();
+        RequestSettingsSave();
     }
 
     private void ToggleScrolling()
@@ -326,7 +323,17 @@ public partial class App : Application
             _editor.Show();
         }
 
-        _editor.RefreshScriptList();
+        // The editor reads the scripts folder itself, and that enumeration can be refused by the
+        // file system, so the request that opens the window may not throw either.
+        try
+        {
+            _editor.RefreshScriptList();
+        }
+        catch (Exception exception)
+        {
+            ReportFailure("Сценарии", "прочитать список сценариев", exception, _scriptStore?.ScriptsDirectory);
+        }
+
         _editor.Activate();
         RefreshTray();
     }
@@ -406,14 +413,18 @@ public partial class App : Application
 
     private static string DescribeCapture(CaptureExclusionState state, string diagnostic) => state switch
     {
-        CaptureExclusionState.ExcludedFromCapture => "Невидимый режим: включён",
+        // 0x11 is what the system read back, not a promise about the pixels: the caveat belongs
+        // to the success path too. The tray tooltip cuts "{ToolTip} — {status}" to 63 characters,
+        // so a status longer than 54 loses its own tail, which is why this wording is short.
+        CaptureExclusionState.ExcludedFromCapture =>
+            "Невидимый режим: включён, 0x11 — проверяется вручную",
         CaptureExclusionState.BlackBoxOnly =>
             "Невидимый режим: чёрный прямоугольник в кадре (система подменила WDA_MONITOR)",
         CaptureExclusionState.Visible => "Невидимый режим: выключен, окно видно в записи экрана",
         _ => $"Невидимый режим: не работает — {diagnostic}",
     };
 
-    private void OnPrompterUserSettingChanged(object? sender, EventArgs e) => SaveSettings();
+    private void OnPrompterUserSettingChanged(object? sender, EventArgs e) => RequestSettingsSave();
 
     private void OnEditorScriptTextEdited(object? sender, EventArgs e)
     {
@@ -433,6 +444,7 @@ public partial class App : Application
     /// </summary>
     private void OnEditorClosed(object? sender, EventArgs e)
     {
+        TryFlushSettings();
         _scriptSave?.Flush();
 
         if (CurrentEditor(sender) is not { } editor)
@@ -461,7 +473,7 @@ public partial class App : Application
         }
 
         _scriptText = ScriptText.Normalize(_editor.ScriptText);
-        _scriptStore?.SaveCurrentText(_scriptText);
+        SaveCurrentScript();
         _prompter?.SetScriptText(_scriptText);
     }
 
@@ -475,13 +487,15 @@ public partial class App : Application
         var edited = AdoptLiveValues(editor.Settings);
         _settings = edited;
         _prompter?.ApplySettings(edited);
-        SaveSettings();
+        RequestSettingsSave();
     }
 
     /// <summary>
     /// The editor works on a clone taken when it opened, so the values this class owns while the
-    /// application runs — the window geometry and the two live modes — are carried over instead of
-    /// being replaced by that older snapshot.
+    /// application runs — the window position and the two live modes — are carried over instead
+    /// of being replaced by that older snapshot. The size is deliberately not among them: it is
+    /// the one value the editor exists to change, and the live instance only ever holds what the
+    /// prompter measured last, which would throw the typed number away before it is applied.
     /// </summary>
     private SuflerSettings AdoptLiveValues(SuflerSettings edited)
     {
@@ -491,8 +505,6 @@ public partial class App : Application
         {
             edited.WindowLeft = live.WindowLeft;
             edited.WindowTop = live.WindowTop;
-            edited.WindowWidth = live.WindowWidth;
-            edited.WindowHeight = live.WindowHeight;
             edited.CaptureExcluded = live.CaptureExcluded;
             edited.ClickThrough = live.ClickThrough;
         }
@@ -521,6 +533,157 @@ public partial class App : Application
         _settingsStore.Save(_settings);
     }
 
+    /// <summary>
+    /// Schedules the write instead of performing it. A slider with IsSnapToTickEnabled reports a
+    /// value per tick, so one drag would otherwise serialize, write and re-apply the whole
+    /// settings object dozens of times. Only the disk write waits here: the values in memory are
+    /// already the user's, because every caller changes them before it asks for the save.
+    /// </summary>
+    private void RequestSettingsSave() => _settingsSave?.Request(SaveSettingsGuarded);
+
+    /// <summary>
+    /// The debounced write the dispatcher runs later, guarded because it runs outside every
+    /// handler this class owns.
+    /// </summary>
+    private void SaveSettingsGuarded()
+    {
+        try
+        {
+            SaveSettings();
+        }
+        catch (Exception exception)
+        {
+            ReportFailure("Настройки", "сохранить настройки", exception, _settingsStore?.SettingsPath);
+        }
+    }
+
+    /// <summary>
+    /// Runs the pending write right away. The editor close, the session end and the exit are the
+    /// three moments after which no later dispatcher tick would come to do it.
+    /// </summary>
+    private void TryFlushSettings()
+    {
+        try
+        {
+            _settingsSave?.Flush();
+        }
+        catch (Exception exception)
+        {
+            // The application is going away, so a balloon would never be seen: the log is left.
+            LogError(exception);
+        }
+    }
+
+    /// <summary>
+    /// Writes the working script. Reached from the debounced editor edit and from the tray, so it
+    /// may not throw out of either.
+    /// </summary>
+    private void SaveCurrentScript()
+    {
+        try
+        {
+            _scriptStore?.SaveCurrentText(_scriptText);
+        }
+        catch (Exception exception)
+        {
+            ReportFailure("Сценарий", "сохранить сценарий", exception, _scriptStore?.CurrentTextPath);
+        }
+    }
+
+    /// <summary>
+    /// Reads a script the user picked from the tray. A refusal returns false and leaves the
+    /// working script alone: a file that could not be read must not blank the prompter.
+    /// </summary>
+    private bool TryOpenScript(string path, out string text)
+    {
+        text = string.Empty;
+        if (_scriptStore is not { } store)
+        {
+            return false;
+        }
+
+        try
+        {
+            text = ScriptText.Normalize(store.OpenFile(path));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            ReportFailure("Сценарий", "открыть сценарий", exception, path);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Defaults are a working configuration and an empty script is a working prompter, so a file
+    /// the file system refuses at startup is reported with its path and then replaced by those
+    /// instead of being allowed to prevent the application from starting.
+    /// </summary>
+    private SuflerSettings LoadSettingsOrDefaults()
+    {
+        try
+        {
+            return _settingsStore?.Load() ?? new SuflerSettings();
+        }
+        catch (Exception exception)
+        {
+            ReportStartupFailure(
+                "Не удалось прочитать настройки",
+                "Суфлёр запущен с настройками по умолчанию",
+                exception,
+                _settingsStore?.SettingsPath);
+            return new SuflerSettings();
+        }
+    }
+
+    private string LoadCurrentScriptOrEmpty()
+    {
+        try
+        {
+            return _scriptStore is { } store ? ScriptText.Normalize(store.LoadCurrentText()) : string.Empty;
+        }
+        catch (Exception exception)
+        {
+            ReportStartupFailure(
+                "Не удалось прочитать текущий сценарий",
+                "Суфлёр запущен с пустым сценарием",
+                exception,
+                _scriptStore?.CurrentTextPath);
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Reports a failure the user can keep working through. The reason goes to the log and the
+    /// message keeps the original text of the exception, because «не удалось» on its own says
+    /// nothing about what to do. A balloon is the only channel that does not interrupt a hotkey,
+    /// a tray click or a slider drag.
+    /// </summary>
+    private void ReportFailure(string title, string action, Exception exception, string? path)
+    {
+        LogError(exception);
+
+        var where = string.IsNullOrWhiteSpace(path) ? string.Empty : $"{Environment.NewLine}{path}";
+        _tray?.Notify(title, $"Не удалось {action}: {exception.Message}{where}");
+    }
+
+    /// <summary>
+    /// The startup counterpart of <see cref="ReportFailure"/>: the run continues, so the failure
+    /// is worth a window of its own rather than a balloon nobody may see.
+    /// </summary>
+    private static void ReportStartupFailure(string headline, string fallback, Exception exception, string? path)
+    {
+        LogError(exception);
+
+        var where = string.IsNullOrWhiteSpace(path) ? string.Empty : $"{Environment.NewLine}Файл: {path}";
+        MessageBox.Show(
+            $"{headline}: {exception.Message}{where}{Environment.NewLine}{Environment.NewLine}" +
+            $"{fallback}. Подробности записаны в {ErrorLogPath}",
+            WindowName,
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+    }
+
     private void RefreshTray()
     {
         if (_tray is null)
@@ -539,7 +702,7 @@ public partial class App : Application
         ClickThrough = _prompter?.ClickThrough == true,
         IsRunning = _prompter?.IsScrollingRunning == true,
         CaptureStatus = _captureStatus,
-        Scripts = _scriptStore?.ListSavedScripts() ?? Array.Empty<string>(),
+        Scripts = ListSavedScriptsQuietly(),
         // The working script always lives in current.txt, so a path here is the file the user
         // picked from the tray submenu.
         CurrentScriptPath = _currentScriptPath,
@@ -547,17 +710,34 @@ public partial class App : Application
 
     private void OnScriptRequested(object? sender, string path)
     {
-        if (_scriptStore is null)
+        if (_scriptStore is null || !TryOpenScript(path, out var script))
         {
             return;
         }
 
-        _scriptText = ScriptText.Normalize(_scriptStore.OpenFile(path));
+        _scriptText = script;
         _currentScriptPath = path;
-        _scriptStore.SaveCurrentText(_scriptText);
+        SaveCurrentScript();
         _prompter?.SetScriptText(_scriptText);
         _editor?.SetScriptText(_scriptText);
         RefreshTray();
+    }
+
+    /// <summary>
+    /// The tray asks for the scripts on every refresh, and enumerating the folder can be refused
+    /// by the file system, so a refusal must not reach the click that triggered the refresh.
+    /// </summary>
+    private IReadOnlyList<string> ListSavedScriptsQuietly()
+    {
+        try
+        {
+            return _scriptStore?.ListSavedScripts() ?? Array.Empty<string>();
+        }
+        catch (Exception exception)
+        {
+            LogError(exception);
+            return Array.Empty<string>();
+        }
     }
 
     // _exiting is set before Shutdown() because that is what closes the windows and therefore what
@@ -572,7 +752,7 @@ public partial class App : Application
     {
         // Windows closes the windows after this event, so the prompter must stop vetoing closes.
         _exiting = true;
-        SaveSettings();
+        TryFlushSettings();
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
