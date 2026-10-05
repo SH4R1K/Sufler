@@ -1,23 +1,424 @@
-﻿using System.Text;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using System.Windows.Threading;
+using Sufler.App.Interop;
+using Sufler.App.Views;
+using Sufler.Core.Scrolling;
+using Sufler.Core.Settings;
 
 namespace Sufler.App;
 
 /// <summary>
-/// Interaction logic for MainWindow.xaml
+/// The prompter: a semi-transparent always-on-top window showing the script while it
+/// scrolls. The window never persists anything itself; it reports geometry changes and
+/// leaves storage to the composition root.
 /// </summary>
 public partial class MainWindow : Window
 {
-    public MainWindow()
+    private const double DefaultWidth = 720d;
+    private const double DefaultHeight = 540d;
+
+    private static readonly TimeSpan ScrollTickInterval = TimeSpan.FromMilliseconds(16);
+    private static readonly TimeSpan GeometryChangedDelay = TimeSpan.FromMilliseconds(400);
+
+    private readonly ScrollEngine _engine = new();
+    private readonly Stopwatch _clock = new();
+    private readonly Debouncer _geometryChanged;
+    private readonly DispatcherTimer _scrollTimer;
+
+    private TimeSpan _lastTick;
+    private double _lineHeightPx;
+    private bool _metricsDirty = true;
+    private bool _clickThrough;
+    private bool _applyingSettings;
+
+    // Live reference to the settings the composition root owns: geometry is written back into
+    // it before UserSettingChanged is raised. ApplySettings swaps it, so always write into the
+    // instance handed over most recently.
+    private SuflerSettings _settings;
+
+    private string _speedText = string.Empty;
+    private string _pixelsText = string.Empty;
+    private string _stateText = string.Empty;
+
+    public MainWindow(SuflerSettings settings, string scriptText)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Normalize();
+        _settings = settings;
+
+        _geometryChanged = new Debouncer(GeometryChangedDelay);
+        _scrollTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = ScrollTickInterval };
+        _scrollTimer.Tick += OnScrollTick;
+
         InitializeComponent();
+
+        SourceInitialized += OnSourceInitialized;
+        ContentRendered += OnContentRendered;
+        Loaded += OnPrompterLoaded;
+        Closed += OnPrompterClosed;
+        LocationChanged += OnWindowGeometryChanged;
+        SizeChanged += OnWindowGeometryChanged;
+        LayoutUpdated += OnPrompterLayoutUpdated;
+        PreviewMouseWheel += OnPrompterMouseWheel;
+        PreviewKeyDown += OnPrompterKeyDown;
+
+        Opacity = _settings.Opacity;
+        ApplyScriptFont();
+        ApplyEngineSettings();
+        ApplyWindowGeometry(_settings);
+        SetScriptText(scriptText);
+    }
+
+    /// <summary>
+    /// The window position or size changed and may have settled; the composition root can
+    /// persist the current geometry of <see cref="SuflerSettings"/>.
+    /// </summary>
+    public event EventHandler? UserSettingChanged;
+
+    public bool ClickThrough => _clickThrough;
+
+    public bool IsScrollingRunning => _engine.IsRunning;
+
+    /// <summary>
+    /// Copies font, playback and geometry values from the settings and re-applies them.
+    /// The reference is kept so later geometry writes land in the object the caller owns.
+    /// </summary>
+    public void ApplySettings(SuflerSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Normalize();
+        _settings = settings;
+
+        _applyingSettings = true;
+        try
+        {
+            Opacity = _settings.Opacity;
+            ApplyScriptFont();
+            ApplyEngineSettings();
+            ApplyWindowGeometry(_settings);
+        }
+        finally
+        {
+            _applyingSettings = false;
+        }
+
+        PushMetrics();
+        ApplyNativeStyles();
+        UpdateStatusStrip();
+    }
+
+    /// <summary>
+    /// Replaces the script and rewinds the engine, which resets the offset and any loop pause.
+    /// </summary>
+    public void SetScriptText(string text)
+    {
+        ScriptTextBlock.Text = text ?? string.Empty;
+        EmptyHint.Visibility = string.IsNullOrWhiteSpace(ScriptTextBlock.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        InvalidateMetrics();
+        _engine.OnContentChanged();
+        ApplyOffset(_engine.OffsetPx);
+        UpdateStatusStrip();
+    }
+
+    /// <summary>
+    /// In click-through mode Windows routes every mouse message to the window underneath, so
+    /// the prompter deliberately receives no input: no dragging, no wheel scrolling, no text
+    /// selection. The global hotkey is the way in and out of the mode.
+    /// </summary>
+    public void SetClickThrough(bool enabled)
+    {
+        _clickThrough = enabled;
+        ApplyNativeStyles();
+    }
+
+    public void SetScrollingRunning(bool running)
+    {
+        if (running)
+        {
+            _engine.Start();
+        }
+        else
+        {
+            _engine.Stop();
+        }
+
+        UpdateStatusStrip();
+    }
+
+    public void ResetScroll()
+    {
+        _engine.Reset();
+        ApplyOffset(_engine.OffsetPx);
+        UpdateStatusStrip();
+    }
+
+    private void OnPrompterLoaded(object sender, RoutedEventArgs e)
+    {
+        _clock.Start();
+        _lastTick = _clock.Elapsed;
+
+        // The timer keeps ticking while the window is hidden on purpose: a paused timer would
+        // collect one huge elapsed delta and make the script jump when the window comes back.
+        _scrollTimer.Start();
+    }
+
+    private void OnPrompterClosed(object? sender, EventArgs e)
+    {
+        _scrollTimer.Stop();
+        _scrollTimer.Tick -= OnScrollTick;
+        _geometryChanged.Flush();
+        _geometryChanged.Dispose();
+    }
+
+    private void OnSourceInitialized(object? sender, EventArgs e) => ApplyNativeStyles();
+
+    private void OnContentRendered(object? sender, EventArgs e)
+    {
+        ApplyNativeStyles();
+        InvalidateMetrics();
+        PushMetrics();
+        _lastTick = _clock.Elapsed;
+    }
+
+    private void ApplyNativeStyles()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // WPF rewrites the extended window style whenever its own window state changes
+        // (activation, Show/Hide, visibility of a layered window), which silently drops the
+        // bits set here. That is why these calls are repeated on SourceInitialized,
+        // ContentRendered and after every toggle instead of being done once in Loaded.
+        WindowStyleNative.SetToolWindow(hwnd, true);
+        WindowStyleNative.SetClickThrough(hwnd, _clickThrough);
+    }
+
+    private void ApplyWindowGeometry(SuflerSettings settings)
+    {
+        var width = settings.WindowWidth is { } configuredWidth && configuredWidth > 0d ? configuredWidth : DefaultWidth;
+        var height = settings.WindowHeight is { } configuredHeight && configuredHeight > 0d ? configuredHeight : DefaultHeight;
+
+        Width = width;
+        Height = height;
+
+        if (settings.WindowLeft is { } left && settings.WindowTop is { } top)
+        {
+            Left = left;
+            Top = top;
+            return;
+        }
+
+        var workArea = SystemParameters.WorkArea;
+        Left = workArea.Left + ((workArea.Width - width) / 2d);
+        Top = workArea.Top + ((workArea.Height - height) / 2d);
+    }
+
+    private void OnWindowGeometryChanged(object? sender, EventArgs e)
+    {
+        if (_applyingSettings || !IsLoaded)
+        {
+            return;
+        }
+
+        _geometryChanged.Request(RaiseUserSettingChanged);
+    }
+
+    private void RaiseUserSettingChanged()
+    {
+        if (double.IsNaN(Left) || double.IsNaN(Top))
+        {
+            return;
+        }
+
+        _settings.WindowLeft = Left;
+        _settings.WindowTop = Top;
+        _settings.WindowWidth = ActualWidth > 0d ? ActualWidth : Width;
+        _settings.WindowHeight = ActualHeight > 0d ? ActualHeight : Height;
+        UserSettingChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ApplyEngineSettings()
+    {
+        _engine.LinesPerMinute = _settings.LinesPerMinute;
+        _engine.Loop = _settings.Loop;
+    }
+
+    private void ApplyScriptFont()
+    {
+        var typeface = LineMetrics.ResolveTypeface(_settings.FontFamily);
+        ScriptTextBlock.FontFamily = typeface.FontFamily;
+        ScriptTextBlock.FontSize = _settings.FontSize;
+        _lineHeightPx = LineMetrics.MeasureLineHeight(
+            typeface,
+            _settings.FontSize,
+            VisualTreeHelper.GetDpi(ScriptTextBlock).PixelsPerDip);
+        InvalidateMetrics();
+    }
+
+    private void OnPrompterLayoutUpdated(object? sender, EventArgs e)
+    {
+        InvalidateMetrics();
+        PushMetrics();
+    }
+
+    private void InvalidateMetrics() => _metricsDirty = true;
+
+    /// <summary>
+    /// Feeds the measured text metrics to the engine. A non-positive line height, content
+    /// height or viewport height means nothing is laid out yet, so the engine keeps the
+    /// metrics it already had.
+    /// </summary>
+    private void PushMetrics()
+    {
+        if (!_metricsDirty)
+        {
+            return;
+        }
+
+        var lineHeight = _lineHeightPx;
+        var contentHeight = ScriptTextBlock.ActualHeight;
+        var viewportHeight = Scroller.ActualHeight;
+        if (lineHeight <= 0d || contentHeight <= 0d || viewportHeight <= 0d)
+        {
+            return;
+        }
+
+        _metricsDirty = false;
+        _engine.LineHeightPx = lineHeight;
+        _engine.ContentHeightPx = contentHeight;
+        _engine.ViewportHeightPx = viewportHeight;
+    }
+
+    private void OnScrollTick(object? sender, EventArgs e)
+    {
+        var now = _clock.Elapsed;
+        var elapsed = now - _lastTick;
+        _lastTick = now;
+
+        if (_engine.IsRunning)
+        {
+            // Speed comes from the measured elapsed time, never from counting timer ticks.
+            var step = _engine.Advance(elapsed);
+            ApplyOffset(step.OffsetPx);
+        }
+
+        UpdateStatusStrip();
+    }
+
+    private void ApplyOffset(double offsetPx)
+    {
+        var scrollable = Math.Max(0d, Scroller.ScrollableHeight);
+        Scroller.ScrollToVerticalOffset(Math.Clamp(offsetPx, 0d, scrollable));
+    }
+
+    private void OnPrompterMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        _engine.ScrollLines(Math.Sign(e.Delta));
+        e.Handled = true;
+        ApplyOffset(_engine.OffsetPx);
+        UpdateStatusStrip();
+    }
+
+    private void OnPrompterKeyDown(object sender, KeyEventArgs e)
+    {
+        // Modified combinations belong to the application and to the global hotkeys; leaving
+        // them unhandled is what keeps Ctrl+V and Ctrl+Alt+T working.
+        if (Keyboard.Modifiers != ModifierKeys.None)
+        {
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Up:
+                _engine.ScrollLines(1d);
+                break;
+            case Key.Down:
+                _engine.ScrollLines(-1d);
+                break;
+            case Key.PageUp:
+                _engine.PageBy(1);
+                break;
+            case Key.PageDown:
+                _engine.PageBy(-1);
+                break;
+            case Key.Home:
+                ResetScroll();
+                e.Handled = true;
+                return;
+            default:
+                return;
+        }
+
+        e.Handled = true;
+        ApplyOffset(_engine.OffsetPx);
+        UpdateStatusStrip();
+    }
+
+    private void OnDragStripMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ButtonState == MouseButtonState.Pressed)
+        {
+            DragMove();
+        }
+    }
+
+    private void OnPrompterMouseEnter(object sender, MouseEventArgs e) => StatusStrip.Opacity = 1d;
+
+    private void OnPrompterMouseLeave(object sender, MouseEventArgs e) => StatusStrip.Opacity = 0.45d;
+
+    private void UpdateStatusStrip()
+    {
+        var speed = $"{_engine.LinesPerMinute:0} строк/мин";
+        if (!string.Equals(speed, _speedText, StringComparison.Ordinal))
+        {
+            _speedText = speed;
+            SpeedText.Text = speed;
+        }
+
+        var pixels = $"≈ {_engine.PixelsPerSecond:0} px/с";
+        if (!string.Equals(pixels, _pixelsText, StringComparison.Ordinal))
+        {
+            _pixelsText = pixels;
+            PixelsText.Text = pixels;
+        }
+
+        var state = DescribeRunState();
+        if (!string.Equals(state, _stateText, StringComparison.Ordinal))
+        {
+            _stateText = state;
+            StateText.Text = state;
+        }
+    }
+
+    private string DescribeRunState()
+    {
+        if (_engine.MaxOffsetPx <= 0d)
+        {
+            return "Стоп";
+        }
+
+        if (_engine.IsPaused)
+        {
+            return "Пауза";
+        }
+
+        if (_engine.IsRunning)
+        {
+            return "Идёт";
+        }
+
+        return _engine.IsAtEnd ? "В конце" : "Стоп";
     }
 }
