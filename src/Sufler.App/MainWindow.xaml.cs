@@ -380,10 +380,10 @@ public partial class MainWindow : Window
 
     private void OnPrompterMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        // Sign convention: a positive line count moves further into the script, because
-        // ScrollEngine grows OffsetPx by lines * LineHeightPx and that offset goes straight into
-        // ScrollToVerticalOffset. A wheel notch down therefore scrolls like Key.Down, not Key.Up.
-        _engine.ScrollLines(Math.Sign(e.Delta));
+        // e.Delta keeps the Win32 WM_MOUSEWHEEL sign: positive for a notch up, negative for a
+        // notch down (-120), which is also why a bare ScrollViewer decreases its offset on a
+        // positive delta. A positive line count advances through the script, hence the negation.
+        _engine.ScrollLines(-Math.Sign(e.Delta));
         e.Handled = true;
         ApplyOffset(_engine.OffsetPx);
         UpdateStatusStrip();
