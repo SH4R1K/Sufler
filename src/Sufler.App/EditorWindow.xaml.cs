@@ -30,6 +30,11 @@ public partial class EditorWindow : Window
     private const double MaxWindowHeight = 2160d;
     private const double WindowSizeStep = 10d;
 
+    // Mirrors MainWindow.DefaultWidth/DefaultHeight: the size the prompter falls back to when
+    // the setting is null, so the sliders still have a position to show for "no stored geometry".
+    private const double DefaultWindowWidth = 720d;
+    private const double DefaultWindowHeight = 540d;
+
     private readonly IScriptStore _scriptStore;
     private readonly IHotKeyService _hotKeys;
     private readonly Dictionary<AppCommand, HotKeyRow> _hotKeyRows = new();
@@ -61,6 +66,15 @@ public partial class EditorWindow : Window
         _settings.Normalize();
 
         InitializeComponent();
+
+        // The size sliders take their geometry from the constants above instead of markup
+        // literals, so the ticks cannot drift apart from the values StoreWindowDimension writes.
+        WindowWidthSlider.Minimum = MinWindowWidth;
+        WindowWidthSlider.Maximum = MaxWindowWidth;
+        WindowWidthSlider.TickFrequency = WindowSizeStep;
+        WindowHeightSlider.Minimum = MinWindowHeight;
+        WindowHeightSlider.Maximum = MaxWindowHeight;
+        WindowHeightSlider.TickFrequency = WindowSizeStep;
 
         LoadFontFamilies();
         BuildHotKeyRows();
@@ -300,55 +314,71 @@ public partial class EditorWindow : Window
         SettingsEdited?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnWindowWidthChanged(object sender, TextChangedEventArgs e)
+    private void OnWindowWidthSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (!_isReady || _suppressEvents)
+        if (!_isReady)
         {
             return;
         }
 
-        if (TryReadWindowDimension(WindowWidthBox.Text, MinWindowWidth, MaxWindowWidth, out var width))
+        UpdateReadouts();
+        if (_suppressEvents)
         {
-            StoreWindowDimension(width, isWidth: true);
+            return;
         }
+
+        StoreWindowDimension(e.NewValue, isWidth: true);
     }
 
-    private void OnWindowHeightChanged(object sender, TextChangedEventArgs e)
+    private void OnWindowHeightSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (!_isReady || _suppressEvents)
+        if (!_isReady)
         {
             return;
         }
 
-        if (TryReadWindowDimension(WindowHeightBox.Text, MinWindowHeight, MaxWindowHeight, out var height))
+        UpdateReadouts();
+        if (_suppressEvents)
         {
-            StoreWindowDimension(height, isWidth: false);
+            return;
         }
+
+        StoreWindowDimension(e.NewValue, isWidth: false);
     }
 
     /// <summary>
-    /// Rewrites a size box to the stored value when the typed text is out of range, empty or
-    /// unreadable. Empty is how the editor says "let the prompter keep its default size", so it
-    /// must never become a null dimension the prompter could not act on.
+    /// Drops both stored dimensions back to null, which is how the editor says "let the
+    /// prompter keep its default size": the sliders land on that default and the composition
+    /// root hears a single edit. A click while nothing was stored changes nothing and says nothing.
     /// </summary>
-    private void OnWindowSizeCommitted(object sender, RoutedEventArgs e)
+    private void OnResetWindowSizeClick(object sender, RoutedEventArgs e)
     {
-        if (!_isReady || sender is not TextBox box)
+        if (!_isReady)
         {
             return;
         }
 
-        var isWidth = ReferenceEquals(box, WindowWidthBox);
-        var stored = isWidth ? _settings.WindowWidth : _settings.WindowHeight;
+        var alreadyDefault = _settings.WindowWidth is null && _settings.WindowHeight is null;
+
         _suppressEvents = true;
         try
         {
-            box.Text = FormatWindowDimension(stored);
+            WindowWidthSlider.Value = DefaultWindowWidth;
+            WindowHeightSlider.Value = DefaultWindowHeight;
         }
         finally
         {
             _suppressEvents = false;
         }
+
+        if (alreadyDefault)
+        {
+            return;
+        }
+
+        _settings.WindowWidth = null;
+        _settings.WindowHeight = null;
+        SettingsEdited?.Invoke(this, EventArgs.Empty);
     }
 
     private void StoreWindowDimension(double value, bool isWidth)
@@ -370,24 +400,6 @@ public partial class EditorWindow : Window
         }
 
         SettingsEdited?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>
-    /// Shows the real geometry the prompter reported, down to a tenth of a point, so the box
-    /// never claims a round number the window is not at.
-    /// </summary>
-    private static string FormatWindowDimension(double? value)
-        => value is { } dimension
-            ? dimension.ToString("0.#", CultureInfo.CurrentUICulture)
-            : string.Empty;
-
-    private static bool TryReadWindowDimension(string? text, double min, double max, out double value)
-    {
-        value = 0d;
-        return double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentUICulture, out value)
-            && double.IsFinite(value)
-            && value >= min
-            && value <= max;
     }
 
     private void LoadFontFamilies()
@@ -415,10 +427,10 @@ public partial class EditorWindow : Window
         OpacitySlider.Value = _settings.Opacity;
         LoopCheckBox.IsChecked = _settings.Loop;
 
-        // A null dimension means "no stored geometry": the prompter owns its default, so the
-        // box stays empty instead of showing a number that was never asked for.
-        WindowWidthBox.Text = FormatWindowDimension(_settings.WindowWidth);
-        WindowHeightBox.Text = FormatWindowDimension(_settings.WindowHeight);
+        // A null dimension means "no stored geometry": the prompter owns its default size, so
+        // the slider sits on that default instead of on a number that was never asked for.
+        WindowWidthSlider.Value = _settings.WindowWidth ?? DefaultWindowWidth;
+        WindowHeightSlider.Value = _settings.WindowHeight ?? DefaultWindowHeight;
 
         UpdateReadouts();
     }
@@ -428,6 +440,8 @@ public partial class EditorWindow : Window
         FontSizeValueText.Text = FontSizeSlider.Value.ToString("0", CultureInfo.CurrentUICulture);
         SpeedValueText.Text = string.Format(CultureInfo.CurrentUICulture, "{0:0} строк/мин", SpeedSlider.Value);
         OpacityValueText.Text = string.Format(CultureInfo.CurrentUICulture, "{0:0} %", OpacitySlider.Value * 100d);
+        WindowWidthValueText.Text = string.Format(CultureInfo.CurrentUICulture, "{0:0} точек", WindowWidthSlider.Value);
+        WindowHeightValueText.Text = string.Format(CultureInfo.CurrentUICulture, "{0:0} точек", WindowHeightSlider.Value);
     }
 
     private void OnLoadScriptClick(object sender, RoutedEventArgs e)

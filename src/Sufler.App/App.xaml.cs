@@ -495,7 +495,8 @@ public partial class App : Application
     /// application runs — the window position and the two live modes — are carried over instead
     /// of being replaced by that older snapshot. The size is deliberately not among them: it is
     /// the one value the editor exists to change, and the live instance only ever holds what the
-    /// prompter measured last, which would throw the typed number away before it is applied.
+    /// prompter measured last, which would throw the value the editor sets away before it is
+    /// applied.
     /// </summary>
     private SuflerSettings AdoptLiveValues(SuflerSettings edited)
     {
