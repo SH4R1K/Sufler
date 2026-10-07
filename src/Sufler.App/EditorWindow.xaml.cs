@@ -218,17 +218,18 @@ public partial class EditorWindow : Window
     public void SetCaptureStatus(string text) => CaptureStatusText.Text = text ?? string.Empty;
 
     /// <summary>
-    /// Three honest states: the system refused the gesture, the system took it, or the
-    /// gesture was never offered at all.
+    /// The status column has no minimum width, so status texts of differing lengths distort
+    /// the row layout: the registered and the busy-by-another-program state both return an
+    /// empty string, and only the «не зарегистрирована» state is still spelled out.
     /// </summary>
     private string HotKeyStatus(AppCommand command)
     {
         if (_hotKeys.Unavailable.Contains(command))
         {
-            return "занята другой программой";
+            return string.Empty;
         }
 
-        return _hotKeys.Registered.Contains(command) ? "зарегистрирована" : "не зарегистрирована";
+        return _hotKeys.Registered.Contains(command) ? string.Empty : "не зарегистрирована";
     }
 
     private void OnScriptTextChanged(object sender, TextChangedEventArgs e)
@@ -719,9 +720,22 @@ public partial class EditorWindow : Window
         private const string CaptureLabel = "изменить";
         private const string CaptureHint = "нажмите сочетание…";
 
+        // The right panel is 430 px wide, and a row gets 403 DIP inside it:
+        // 430 − 17 (vertical scrollbar) − 6 (ScrollViewer padding) − 4 (stack margin).
+        // 145 + 96 + 90 = 331 leaves ~72 DIP for the status, the only star column, so
+        // the label/gesture/button edges stay put for any window width and any status text.
+        // Gesture text width is 96 − 12 (its margins) = 84 DIP: "Ctrl+Alt+H" needs 66 and
+        // "Ctrl+Shift+S" 79.2 in Consolas 12, longer rebinds fall back to the ellipsis.
+        private const double CaptionColumnWidth = 145;
+        private const double GestureColumnWidth = 96;
+        private const double CaptureColumnMinWidth = 90;
+
         private readonly TextBlock _gesture;
         private readonly TextBlock _status;
         private readonly Button _capture;
+
+        private string _statusText = string.Empty;
+        private bool _capturing;
 
         public HotKeyRow(string description, Action captureRequested)
         {
@@ -744,7 +758,7 @@ public partial class EditorWindow : Window
             {
                 Content = CaptureLabel,
                 Padding = new Thickness(8, 2, 8, 2),
-                MinWidth = 110,
+                MinWidth = CaptureColumnMinWidth,
                 VerticalAlignment = VerticalAlignment.Center,
             };
             _capture.Click += (_, _) => captureRequested();
@@ -759,10 +773,10 @@ public partial class EditorWindow : Window
             };
 
             Element = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(CaptionColumnWidth) });
+            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(GestureColumnWidth) });
             Element.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
+            Element.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
             Grid.SetColumn(caption, 0);
             Grid.SetColumn(_gesture, 1);
@@ -779,8 +793,23 @@ public partial class EditorWindow : Window
 
         public void SetGesture(string gesture) => _gesture.Text = gesture;
 
-        public void SetStatus(string status) => _status.Text = status;
+        public void SetStatus(string status)
+        {
+            _statusText = status;
+            ApplyStatus();
+        }
 
-        public void SetCapturing(bool capturing) => _capture.Content = capturing ? CaptureHint : CaptureLabel;
+        public void SetCapturing(bool capturing)
+        {
+            _capturing = capturing;
+            ApplyStatus();
+        }
+
+        /// <summary>
+        /// While a capture is running the hint takes the status line: in the button it
+        /// would widen that column to ~140 DIP and squeeze the status star down to ~20,
+        /// so the columns would jump on every capture start.
+        /// </summary>
+        private void ApplyStatus() => _status.Text = _capturing ? CaptureHint : _statusText;
     }
 }
