@@ -1,0 +1,48 @@
+# CI workflow for pull requests targeting main.
+#
+# Runs build and tests on windows-latest because Sufler.App targets net10.0-windows
+# and uses WPF and Windows Forms, which do not build on a Linux runner.
+#
+# This is separate from release.yml: the release workflow creates a GitHub Release
+# on push to main and must not be triggered by pull requests (doing so would create
+# a release from a PR branch). Release still runs on merge to main.
+
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Cancels outdated PR runs to save resources. This is intentionally opposite to
+# release.yml (cancel-in-progress: false there) because cancelling an in-progress
+# release run can race for the same tag and leave main without a release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore NuGet packages
+        run: dotnet restore Sufler.sln
+
+      - name: Build solution (Release)
+        run: dotnet build Sufler.sln -c Release --no-restore
+
+      - name: Run unit tests (Release)
+        run: dotnet test tests\Sufler.Tests\Sufler.Tests.csproj -c Release --no-restore

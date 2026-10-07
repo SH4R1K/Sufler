@@ -226,26 +226,83 @@ public partial class MainWindow : Window
         WindowStyleNative.SetClickThrough(hwnd, _clickThrough);
     }
 
+    /// <summary>
+    /// Applies the configured size and position. A size change arriving live from the editor
+    /// must grow the prompter around its own center (new Left = Left + (oldW − newW)/2, same
+    /// for Top) instead of only right/down, so the window stays visually anchored where the
+    /// user put it; the shift is gated on a rendered size (ActualWidth/Height finite and &gt; 0),
+    /// which leaves the first show from the constructor — nothing rendered yet — on the plain
+    /// stored/fallback position with no movement at all.
+    /// </summary>
     private void ApplyWindowGeometry(SuflerSettings settings)
     {
         var width = settings.WindowWidth is { } configuredWidth && configuredWidth > 0d ? configuredWidth : DefaultWidth;
         var height = settings.WindowHeight is { } configuredHeight && configuredHeight > 0d ? configuredHeight : DefaultHeight;
 
+        // Half the size delta per axis: the window keeps its center, so the total growth is
+        // exactly the configured one. Before the first layout the actual size is zero (or
+        // non-finite) and there is no center to preserve, so the shift stays zero.
+        var hasActualSize = ActualWidth > 0d && ActualHeight > 0d
+            && double.IsFinite(ActualWidth) && double.IsFinite(ActualHeight);
+        var shiftX = hasActualSize ? (ActualWidth - width) / 2d : 0d;
+        var shiftY = hasActualSize ? (ActualHeight - height) / 2d : 0d;
+
         Width = width;
         Height = height;
 
-        if (settings.WindowLeft is { } left &&
-            settings.WindowTop is { } top &&
-            IsOnVirtualScreen(left, top, width, height))
+        double left;
+        double top;
+        if (settings.WindowLeft is { } storedLeft &&
+            settings.WindowTop is { } storedTop &&
+            IsOnVirtualScreen(storedLeft, storedTop, width, height))
         {
-            Left = left;
-            Top = top;
-            return;
+            left = storedLeft;
+            top = storedTop;
+        }
+        else
+        {
+            var centered = CenterInWorkArea(width, height);
+            left = centered.X;
+            top = centered.Y;
         }
 
+        // Both positioning branches — restored from settings and centered on the work area —
+        // shift by the same delta so the growth stays symmetric either way.
+        left += shiftX;
+        top += shiftY;
+
+        if (!IsOnVirtualScreen(left, top, width, height))
+        {
+            // The symmetric shift may push the grown window off the virtual screen; fall back
+            // to plain work-area centering so it always stays grabbable.
+            var centered = CenterInWorkArea(width, height);
+            left = centered.X;
+            top = centered.Y;
+        }
+
+        Left = left;
+        Top = top;
+
+        if (hasActualSize)
+        {
+            // ApplySettings suppresses LocationChanged, so nothing else would push the shifted
+            // position back before the debounced save runs on the caller-owned object; write it
+            // here to keep that save from persisting the pre-shift one.
+            _settings.WindowLeft = Left;
+            _settings.WindowTop = Top;
+        }
+    }
+
+    /// <summary>
+    /// Work-area centering as a pure calculation, shared by the initial placement and the
+    /// on-screen fallback so both cannot drift apart.
+    /// </summary>
+    private static (double X, double Y) CenterInWorkArea(double width, double height)
+    {
         var workArea = SystemParameters.WorkArea;
-        Left = workArea.Left + ((workArea.Width - width) / 2d);
-        Top = workArea.Top + ((workArea.Height - height) / 2d);
+        return (
+            workArea.Left + ((workArea.Width - width) / 2d),
+            workArea.Top + ((workArea.Height - height) / 2d));
     }
 
     /// <summary>

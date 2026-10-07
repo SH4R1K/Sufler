@@ -160,10 +160,13 @@
 
                     <Separator Margin="0,8,0,0" />
                     <TextBlock Text="Размер окна суфлёра" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <!-- Minimum/Maximum/TickFrequency are assigned in EditorWindow.xaml.cs from the
+                         Min/Max/Step constants, so the markup keeps no copy of those numbers. -->
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -173,21 +176,38 @@
                                    Text="Ширина, точек"
                                    VerticalAlignment="Center"
                                    Margin="0,0,8,4" />
-                        <TextBox x:Name="WindowWidthBox"
-                                 Grid.Row="0" Grid.Column="1"
-                                 Margin="0,0,0,4"
-                                 TextChanged="OnWindowWidthChanged"
-                                 LostFocus="OnWindowSizeCommitted" />
+                        <Slider x:Name="WindowWidthSlider"
+                                Grid.Row="0" Grid.Column="1"
+                                Margin="0,0,0,4"
+                                IsSnapToTickEnabled="True"
+                                ValueChanged="OnWindowWidthSliderChanged" />
+                        <TextBlock x:Name="WindowWidthValueText"
+                                   Grid.Row="0" Grid.Column="2"
+                                   MinWidth="72"
+                                   Margin="8,0,0,4"
+                                   VerticalAlignment="Center"
+                                   TextAlignment="Right" />
                         <TextBlock Grid.Row="1" Grid.Column="0"
                                    Text="Высота, точек"
                                    VerticalAlignment="Center"
                                    Margin="0,0,8,0" />
-                        <TextBox x:Name="WindowHeightBox"
-                                 Grid.Row="1" Grid.Column="1"
-                                 TextChanged="OnWindowHeightChanged"
-                                 LostFocus="OnWindowSizeCommitted" />
+                        <Slider x:Name="WindowHeightSlider"
+                                Grid.Row="1" Grid.Column="1"
+                                IsSnapToTickEnabled="True"
+                                ValueChanged="OnWindowHeightSliderChanged" />
+                        <TextBlock x:Name="WindowHeightValueText"
+                                   Grid.Row="1" Grid.Column="2"
+                                   MinWidth="72"
+                                   Margin="8,0,0,0"
+                                   VerticalAlignment="Center"
+                                   TextAlignment="Right" />
                     </Grid>
-                    <TextBlock Text="Ширина 320–3840, высота 240–2160 точек; введённое значение округляется до кратного 10. Пусто — размер по умолчанию."
+                    <Button Content="По умолчанию"
+                            Margin="0,6,0,0"
+                            Padding="10,3"
+                            HorizontalAlignment="Left"
+                            Click="OnResetWindowSizeClick" />
+                    <TextBlock Text="Ширина 320–3840, высота 240–2160 точек, шаг 10. «По умолчанию» возвращает размер по умолчанию — 720×540."
                                TextWrapping="Wrap"
                                Foreground="#FF6A6A6A"
                                FontSize="12"
