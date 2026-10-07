@@ -38,5 +38,5 @@ WPF-телесуфлёр: скроллер текста с окном редак
 ## Context
 - Настройки: `%AppData%\Sufler\settings.json` — атомарная запись через `.tmp`, битый JSON отодвигается в `settings.corrupt.json`; рядом `scripts\*.txt|*.md`, лог `error.log`. Hot-reload с диска нет — только живое применение в памяти и чтение при старте.
 - `ShutdownMode=OnExplicitShutdown`: окно скрывается, Alt+F4 сворачивает (`README.md:74`).
-- CI один: push в main → self-contained релиз; PR-CI нет.
+- CI (build+test) на pull request в main, релиз — при push в main (в т.ч. при слиянии одобренного PR).
 - Коммиты — conventional commits с scope, по-английски.
